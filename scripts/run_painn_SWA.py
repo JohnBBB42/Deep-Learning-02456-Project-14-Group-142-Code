@@ -120,13 +120,7 @@ class LitPaiNNModel(L.LightningModule):
         lr_scheduler = self.lr_schedulers()
         lr_scheduler.step()
         
-        # Log the total gradient norm of the model
-        if self.global_step % 100 == 0:
-            grad_norm = torch.norm(torch.stack([p.grad.norm(2) for p in self.model.parameters() if p.grad is not None]))
-            self.log("grad_norm", grad_norm)
-
-        
-        return loss
+        return loss  # Return loss to trigger the backward pass
 
     def on_train_epoch_end(self):
         # Apply SWA model updates at the end of each epoch
@@ -141,7 +135,6 @@ class LitPaiNNModel(L.LightningModule):
             if grad_norms:  # Check that grad_norms is not empty
                 grad_norm = torch.norm(torch.stack(grad_norms))
                 self.log("grad_norm", grad_norm)
-
 
 
     def validation_step(self, batch, batch_idx):
