@@ -132,19 +132,21 @@ class LitPaiNNModel(L.LightningModule):
             norms = L.pytorch.utilities.grad_norm(self.model, norm_type=2)
             self.log("grad_norm", norms["grad_2.0_norm_total"])
 
-    def validation_step(self, batch, batch_idx): # Changed
+    def validation_step(self, batch, batch_idx):
+        # Use original model for forces/stress as it requires gradients
         if self.forces or self.stress:
-            # Forces/stress require gradients, use original model
             preds = self.forward(batch)
         else:
+            # Use SWA model only if available and gradient tracking is not required
             if hasattr(self, 'swa_model') and self.current_epoch >= 100:
                 self.swa_model.eval()
                 with torch.no_grad():
                     preds = self.swa_model(batch)
             else:
                 preds = self.forward(batch)
+        
+        # Proceed with evaluation
         self._eval_step(batch, batch_idx, "val", preds=preds)
-        # self._eval_step(batch, batch_idx, "val") # Original
 
     def on_validation_epoch_end(self):
         if hasattr(self, 'swa_model') and self.current_epoch >= 100:
@@ -161,13 +163,14 @@ class LitPaiNNModel(L.LightningModule):
     def on_test_epoch_end(self):
         self._on_eval_epoch_end("test")
 
-    def _eval_step(self, batch, batch_idx, prefix, preds=None): # Changed
-        # Use provided predictions or compute them if not provided
-        if preds is None: # New
-            with torch.enable_grad():  # Enable gradients for computing forces
-                preds = self.forward(batch)
+    def _eval_step(self, batch, batch_idx, prefix, preds=None):
+        # If predictions are not provided, calculate them (this ensures gradients are tracked if needed)
+        if preds is None:
+            preds = self.forward(batch)
+        
         targets = batch.energy if self.target_property == "energy" else batch.targets
         error = targets - preds[self.target_property]
+        
         # Initialize evaluation metrics on first step
         if not self._metrics:
             for k in ["num_data", "num_nodes", "loss", "sse", "sae"]:
@@ -178,22 +181,26 @@ class LitPaiNNModel(L.LightningModule):
             if self.stress:
                 for k in ["stress_sse", "stress_sae"]:
                     self._metrics[k] = 0.0
+                    
         # Accumulate evaluation metrics
         self._metrics["num_data"] += batch.num_data
         self._metrics["num_nodes"] += torch.sum(batch.num_nodes)
         self._metrics["loss"] += self.loss_function(preds, batch) * batch.num_data
         self._metrics["sse"] += torch.sum(torch.square(error))
         self._metrics["sae"] += torch.sum(torch.abs(error))
+        
         if self.forces:
             # The force errors are component-wise and averaged over the spatial dimensions and atoms
             forces_error = batch.forces - preds[self.forces_property]
             self._metrics["forces_sse"] += torch.sum(torch.square(forces_error))
             self._metrics["forces_sae"] += torch.sum(torch.abs(forces_error))
+            
         if self.stress:
             # The stress errors are component-wise and averaged over the number of data
             stress_error = batch.stress - preds[self.stress_property]
             self._metrics["stress_sse"] += torch.sum(torch.square(stress_error))
             self._metrics["stress_sae"] += torch.sum(torch.abs(stress_error))
+
 
     def _on_eval_epoch_end(self, prefix):
         # Compute and log metrics over the entire evaluation set.
