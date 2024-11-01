@@ -9,7 +9,8 @@ import atomgnn.models.loss
 import atomgnn.models.utils
 
 from run_atoms import configure_cli, run
-from torch.optim.swa_utils import AveragedModel, SWALR  # SWA libraries added
+from torch.optim.swa_utils import AveragedModel, SWALR
+
 
 class LitPaiNNModel(L.LightningModule):
     """PaiNN model."""
@@ -114,18 +115,22 @@ class LitPaiNNModel(L.LightningModule):
         preds = self.forward(batch)
         loss = self.loss_function(preds, batch)
         self.log("train_loss", loss)
-        # Update learning rate
+        
+        # Update learning rate for the base scheduler
         lr_scheduler = self.lr_schedulers()
         lr_scheduler.step()
-        # Update SWA model periodically
-        if hasattr(self, 'swa_model') and self.current_epoch >= 100:  # Start SWA after epoch 100
-            with torch.no_grad():  # Make sure we don't accidentally mess up the gradient computation graph
-                self.swa_model.update_parameters(self.model)
-            self.swa_scheduler.step()
-    
+        
+        # Log the total gradient norm of the model
+        if self.global_step % 100 == 0:
+            norms = L.pytorch.utilities.grad_norm(self.model, norm_type=2)
+            self.log("grad_norm", norms["grad_2.0_norm_total"])
+        
         return loss
 
-
+    def on_train_epoch_end(self):
+        # Apply SWA model updates at the end of each epoch
+        self.swa_model.update_parameters(self)
+        self.swa_scheduler.step()
 
     def on_before_optimizer_step(self, optimizer):
         # Log the total gradient norm of the model
@@ -135,14 +140,7 @@ class LitPaiNNModel(L.LightningModule):
             self.log("grad_norm", norms["grad_2.0_norm_total"])
 
     def validation_step(self, batch, batch_idx):
-        # If the SWA model exists and we are past epoch 100, use it
-        if hasattr(self, 'swa_model') and self.current_epoch >= 100:
-            self.swa_model.train()  # Use train mode to ensure gradients are tracked for forces/stress
-            preds = self.swa_model(batch)
-        else:
-            preds = self.forward(batch)
-        self._eval_step(batch, batch_idx, "val", preds=preds)
-
+        self._eval_step(batch, batch_idx, "val")
 
     def on_validation_epoch_end(self):
         self._on_eval_epoch_end("val")
@@ -153,9 +151,9 @@ class LitPaiNNModel(L.LightningModule):
     def on_test_epoch_end(self):
         self._on_eval_epoch_end("test")
 
-    def _eval_step(self, batch, batch_idx, prefix, preds=None):
-        # Use provided predictions or compute them if not provided
-        if preds is None:
+    def _eval_step(self, batch, batch_idx, prefix):
+        # Compute predictions and error
+        with torch.enable_grad():  # Enable gradients for computing forces
             preds = self.forward(batch)
         targets = batch.energy if self.target_property == "energy" else batch.targets
         error = targets - preds[self.target_property]
@@ -206,29 +204,31 @@ class LitPaiNNModel(L.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
         if self.forces or self.stress:
-            torch.set_grad_enabled(True)  # Enable gradients
-        preds = self.forward(batch)
+            torch.set_grad_enabled(True)
+        
+        # Use SWA model for predictions if it's already finalized
+        model = self.swa_model if self.trainer.state.fn == "test" else self.model
+        preds = model(batch)
         return {k: v.detach().cpu() for k, v in preds.items()}
 
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
-        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
-        # Initialize SWA Model
-        swa_model = AveragedModel(self.model)
-        for param in swa_model.parameters():
-            param.requires_grad = True  # Ensure SWA parameters require gradient
-        swa_scheduler = SWALR(optimizer, swa_lr=0.05)  # SWA learning rate
-        self.swa_model = swa_model
-        self.swa_scheduler = swa_scheduler
-    
-        return [optimizer], [lr_scheduler]
 
+    def configure_optimizers(self):
+        # Initialize the base optimizer
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
+        # Define a learning rate scheduler
+        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
+        
+        # Initialize the SWA model and SWA scheduler
+        self.swa_model = AveragedModel(self)  # Create an SWA wrapper around the model
+        self.swa_scheduler = SWALR(optimizer, anneal_strategy="cos", anneal_epochs=10, swa_lr=5e-5)
+        
+        return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
     def on_train_end(self):
-        # Update BatchNorm statistics with SWA model
+        # Finalize SWA
         torch.optim.swa_utils.update_bn(self.train_dataloader(), self.swa_model)
-
-
+        # Replace model with SWA averaged model for evaluation
+        self.model = self.swa_model
 
 
 def main():
