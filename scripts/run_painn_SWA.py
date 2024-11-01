@@ -133,10 +133,14 @@ class LitPaiNNModel(L.LightningModule):
             self.log("grad_norm", norms["grad_2.0_norm_total"])
 
     def validation_step(self, batch, batch_idx): # Changed
-        self.swa_model.eval() # New
-        with torch.no_grad(): # New
+        if hasattr(self, 'swa_model') and self.current_epoch >= 100: # New
+            self.swa_model.eval() # New
+            # No torch.no_grad() since gradients are needed for forces/stress calculation
             preds = self.swa_model(batch) # New
-        self._eval_step(batch, batch_idx, "val")
+        else:
+            preds = self.forward(batch) # New
+        self._eval_step(batch, batch_idx, "val", preds=preds) # New
+        # self._eval_step(batch, batch_idx, "val") # Original
 
     def on_validation_epoch_end(self):
         if hasattr(self, 'swa_model') and self.current_epoch >= 100:
@@ -153,10 +157,11 @@ class LitPaiNNModel(L.LightningModule):
     def on_test_epoch_end(self):
         self._on_eval_epoch_end("test")
 
-    def _eval_step(self, batch, batch_idx, prefix):
+    def _eval_step(self, batch, batch_idx, prefix): # Changed
         # Compute predictions and error
-        with torch.enable_grad():  # Enable gradients for computing forces
-            preds = self.forward(batch)
+        if preds is None: # New (Indented below)
+            with torch.enable_grad():  # Enable gradients for computing forces
+                preds = self.forward(batch)
         targets = batch.energy if self.target_property == "energy" else batch.targets
         error = targets - preds[self.target_property]
         # Initialize evaluation metrics on first step
