@@ -106,6 +106,8 @@ class LitPaiNNModel(L.LightningModule):
             nodewise=loss_nodewise,
         )
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
+        # Initialize SWAG weight snapshots
+        self.weight_snapshots = []  # This will store weight snapshots for SWAG
 
     def forward(self, batch):
         return self.model(batch)
