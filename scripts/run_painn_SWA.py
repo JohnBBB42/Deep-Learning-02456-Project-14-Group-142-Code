@@ -9,8 +9,7 @@ import atomgnn.models.loss
 import atomgnn.models.utils
 
 from run_atoms import configure_cli, run
-from torch.optim.swa_utils import AveragedModel, SWALR # New
-
+from torch.optim.swa_utils import AveragedModel, SWALR  # SWA libraries added
 
 class LitPaiNNModel(L.LightningModule):
     """PaiNN model."""
@@ -109,8 +108,8 @@ class LitPaiNNModel(L.LightningModule):
 
     def forward(self, batch):
         return self.model(batch)
-    
-    def training_step(self, batch, batch_idx): # Changed
+
+    def training_step(self, batch, batch_idx):
         # Compute loss
         preds = self.forward(batch)
         loss = self.loss_function(preds, batch)
@@ -118,12 +117,13 @@ class LitPaiNNModel(L.LightningModule):
         # Update learning rate
         lr_scheduler = self.lr_schedulers()
         lr_scheduler.step()
-        # Update SWA model periodicall New
+        # Update SWA model periodically
         if hasattr(self, 'swa_model') and self.current_epoch >= 100:  # Start SWA after epoch 100
-            self.swa_model.update_parameters(self.model) # New
-            self.swa_scheduler.step() # New
-        
+            self.swa_model.update_parameters(self.model)
+            self.swa_scheduler.step()
+    
         return loss
+
 
     def on_before_optimizer_step(self, optimizer):
         # Log the total gradient norm of the model
@@ -133,28 +133,10 @@ class LitPaiNNModel(L.LightningModule):
             self.log("grad_norm", norms["grad_2.0_norm_total"])
 
     def validation_step(self, batch, batch_idx):
-        # Use original model for forces/stress as it requires gradients
-        if self.forces or self.stress:
-            preds = self.forward(batch)
-        else:
-            # Use SWA model only if available and gradient tracking is not required
-            if hasattr(self, 'swa_model') and self.current_epoch >= 100:
-                self.swa_model.eval()
-                with torch.no_grad():
-                    preds = self.swa_model(batch)
-            else:
-                preds = self.forward(batch)
-        
-        # Proceed with evaluation
+        preds = self.forward(batch)
         self._eval_step(batch, batch_idx, "val", preds=preds)
 
     def on_validation_epoch_end(self):
-        if hasattr(self, 'swa_model') and self.current_epoch >= 100:
-            self.swa_model.eval()
-            with torch.no_grad():
-                preds = self.swa_model(batch)
-        else:
-            preds = self.forward(batch)
         self._on_eval_epoch_end("val")
 
     def test_step(self, batch, batch_idx):
@@ -164,13 +146,11 @@ class LitPaiNNModel(L.LightningModule):
         self._on_eval_epoch_end("test")
 
     def _eval_step(self, batch, batch_idx, prefix, preds=None):
-        # If predictions are not provided, calculate them (this ensures gradients are tracked if needed)
+        # Use provided predictions or compute them if not provided
         if preds is None:
             preds = self.forward(batch)
-        
         targets = batch.energy if self.target_property == "energy" else batch.targets
         error = targets - preds[self.target_property]
-        
         # Initialize evaluation metrics on first step
         if not self._metrics:
             for k in ["num_data", "num_nodes", "loss", "sse", "sae"]:
@@ -181,26 +161,22 @@ class LitPaiNNModel(L.LightningModule):
             if self.stress:
                 for k in ["stress_sse", "stress_sae"]:
                     self._metrics[k] = 0.0
-                    
         # Accumulate evaluation metrics
         self._metrics["num_data"] += batch.num_data
         self._metrics["num_nodes"] += torch.sum(batch.num_nodes)
         self._metrics["loss"] += self.loss_function(preds, batch) * batch.num_data
         self._metrics["sse"] += torch.sum(torch.square(error))
         self._metrics["sae"] += torch.sum(torch.abs(error))
-        
         if self.forces:
             # The force errors are component-wise and averaged over the spatial dimensions and atoms
             forces_error = batch.forces - preds[self.forces_property]
             self._metrics["forces_sse"] += torch.sum(torch.square(forces_error))
             self._metrics["forces_sae"] += torch.sum(torch.abs(forces_error))
-            
         if self.stress:
             # The stress errors are component-wise and averaged over the number of data
             stress_error = batch.stress - preds[self.stress_property]
             self._metrics["stress_sse"] += torch.sum(torch.square(stress_error))
             self._metrics["stress_sae"] += torch.sum(torch.abs(stress_error))
-
 
     def _on_eval_epoch_end(self, prefix):
         # Compute and log metrics over the entire evaluation set.
@@ -226,20 +202,23 @@ class LitPaiNNModel(L.LightningModule):
         preds = self.forward(batch)
         return {k: v.detach().cpu() for k, v in preds.items()}
 
-    def configure_optimizers(self): # Changed
+    def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         # Initialize SWA Model
-        swa_model = AveragedModel(self.model) # New
+        swa_model = AveragedModel(self.model)
         swa_scheduler = SWALR(optimizer, swa_lr=0.05)  # SWA learning rate
-        self.swa_model = swa_model # New
-        self.swa_scheduler = swa_scheduler # New
+        self.swa_model = swa_model
+        self.swa_scheduler = swa_scheduler
         
-        return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
-        
-    def on_train_end(self): # New
+        return [optimizer], [lr_scheduler]
+
+    def on_train_end(self):
         # Update BatchNorm statistics with SWA model
-        torch.optim.swa_utils.update_bn(self.train_dataloader(), self.swa_model) # New
+        torch.optim.swa_utils.update_bn(self.train_dataloader(), self.swa_model)
+
+
+
 
 def main():
     cli = configure_cli("run_painn")
