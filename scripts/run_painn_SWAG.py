@@ -107,6 +107,16 @@ class LitPaiNNModel(L.LightningModule):
         )
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
+        # --- SWAG additions ---
+        # SWA model for mean tracking
+        self.swa_model = AveragedModel(self)
+        # Variables for SWAG mean, squared mean, and weight snapshots
+        self.swag_mean = None
+        self.swag_squared_mean = None
+        self.weight_snapshots = []
+        self.swa_scheduler = SWALR(optimizer, anneal_strategy="cos", anneal_epochs=10, swa_lr=5e-5)
+        # ----------------------
+
     def forward(self, batch):
         return self.model(batch)
 
@@ -122,10 +132,46 @@ class LitPaiNNModel(L.LightningModule):
         
         return loss  # Return loss to trigger the backward pass
 
+    def _compute_swag_moments(self):
+        """Calculate the mean and squared mean for SWAG."""
+        num_snapshots = len(self.weight_snapshots)
+        swag_mean = {k: torch.zeros_like(v) for k, v in self.weight_snapshots[0].items()}
+        swag_squared_mean = {k: torch.zeros_like(v) for k, v in self.weight_snapshots[0].items()}
+    
+        # Compute first and second moments
+        for snapshot in self.weight_snapshots:
+            for k, v in snapshot.items():
+                swag_mean[k] += v / num_snapshots
+                swag_squared_mean[k] += v ** 2 / num_snapshots
+    
+        return swag_mean, swag_squared_mean
+        
+    def sample_swag_weights(self):
+        """Sample weights from the SWAG posterior and load into model."""
+        sampled_weights = {}
+        for k, mean in self.swag_mean.items():
+            variance = self.swag_squared_mean[k] - mean ** 2
+            std_dev = torch.sqrt(variance.clamp(min=1e-6))  # Add stability to prevent negative variances
+            sampled_weights[k] = mean + std_dev * torch.randn_like(mean)
+    
+        # Load sampled weights into the model
+        self.model.load_state_dict(sampled_weights)
+
+
     def on_train_epoch_end(self):
         # Apply SWA model updates at the end of each epoch
         self.swa_model.update_parameters(self)
         self.swa_scheduler.step()
+    
+        # --- SWAG addition ---
+        # Take a weight snapshot for SWAG
+        state_dict = {k: v.clone() for k, v in self.model.state_dict().items()}
+        self.weight_snapshots.append(state_dict)
+        
+        # Limit the number of snapshots to avoid memory issues
+        if len(self.weight_snapshots) > 20:
+            self.weight_snapshots.pop(0)
+        # ----------------------
 
     def on_before_optimizer_step(self, optimizer):
         # Log the total gradient norm of the model
@@ -204,9 +250,13 @@ class LitPaiNNModel(L.LightningModule):
         if self.forces or self.stress:
             torch.set_grad_enabled(True)
         
-        # Use SWA model for predictions if it's already finalized
-        model = self.swa_model if self.trainer.state.fn == "test" else self.model
-        preds = model(batch)
+        # --- SWAG addition ---
+        # Sample from SWAG if in testing mode
+        if self.trainer.state.fn == "test":
+            self.sample_swag_weights()
+        # ----------------------
+    
+        preds = self.model(batch)
         return {k: v.detach().cpu() for k, v in preds.items()}
 
 
@@ -225,8 +275,14 @@ class LitPaiNNModel(L.LightningModule):
     def on_train_end(self):
         # Finalize SWA
         torch.optim.swa_utils.update_bn(self.train_dataloader(), self.swa_model)
-        # Replace model with SWA averaged model for evaluation
+        
+        # --- SWAG addition ---
+        # Compute SWAG mean and squared mean from snapshots
+        self.swag_mean, self.swag_squared_mean = self._compute_swag_moments()
+        # Use SWA model as the default model for predictions
         self.model = self.swa_model
+        # ----------------------
+
 
 
 def main():
