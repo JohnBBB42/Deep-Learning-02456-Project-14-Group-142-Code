@@ -136,8 +136,12 @@ class LitPaiNNModel(L.LightningModule):
     def on_before_optimizer_step(self, optimizer):
         # Log the total gradient norm of the model
         if self.global_step % 100 == 0:
-            grad_norm = torch.norm(torch.stack([p.grad.norm(2) for p in self.model.parameters() if p.grad is not None]))
-            self.log("grad_norm", grad_norm)
+            # Calculate norm only if there are gradients
+            grad_norms = [p.grad.norm(2) for p in self.model.parameters() if p.grad is not None]
+            if grad_norms:  # Check that grad_norms is not empty
+                grad_norm = torch.norm(torch.stack(grad_norms))
+                self.log("grad_norm", grad_norm)
+
 
 
     def validation_step(self, batch, batch_idx):
