@@ -107,16 +107,6 @@ class LitPaiNNModel(L.LightningModule):
         )
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
-        # --- SWAG additions ---
-        # SWA model for mean tracking
-        self.swa_model = AveragedModel(self)
-        # Variables for SWAG mean, squared mean, and weight snapshots
-        self.swag_mean = None
-        self.swag_squared_mean = None
-        self.weight_snapshots = []
-        self.swa_scheduler = SWALR(optimizer, anneal_strategy="cos", anneal_epochs=10, swa_lr=5e-5)
-        # ----------------------
-
     def forward(self, batch):
         return self.model(batch)
 
@@ -271,6 +261,7 @@ class LitPaiNNModel(L.LightningModule):
         self.swa_scheduler = SWALR(optimizer, anneal_strategy="cos", anneal_epochs=10, swa_lr=5e-5)
         
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
+
 
     def on_train_end(self):
         # Finalize SWA
