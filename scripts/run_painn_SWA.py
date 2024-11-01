@@ -119,10 +119,12 @@ class LitPaiNNModel(L.LightningModule):
         lr_scheduler.step()
         # Update SWA model periodically
         if hasattr(self, 'swa_model') and self.current_epoch >= 100:  # Start SWA after epoch 100
-            self.swa_model.update_parameters(self.model)
+            with torch.no_grad():  # Make sure we don't accidentally mess up the gradient computation graph
+                self.swa_model.update_parameters(self.model)
             self.swa_scheduler.step()
     
         return loss
+
 
 
     def on_before_optimizer_step(self, optimizer):
@@ -133,8 +135,14 @@ class LitPaiNNModel(L.LightningModule):
             self.log("grad_norm", norms["grad_2.0_norm_total"])
 
     def validation_step(self, batch, batch_idx):
-        preds = self.forward(batch)
+        # If the SWA model exists and we are past epoch 100, use it
+        if hasattr(self, 'swa_model') and self.current_epoch >= 100:
+            self.swa_model.train()  # Use train mode to ensure gradients are tracked for forces/stress
+            preds = self.swa_model(batch)
+        else:
+            preds = self.forward(batch)
         self._eval_step(batch, batch_idx, "val", preds=preds)
+
 
     def on_validation_epoch_end(self):
         self._on_eval_epoch_end("val")
@@ -207,11 +215,14 @@ class LitPaiNNModel(L.LightningModule):
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         # Initialize SWA Model
         swa_model = AveragedModel(self.model)
+        for param in swa_model.parameters():
+            param.requires_grad = True  # Ensure SWA parameters require gradient
         swa_scheduler = SWALR(optimizer, swa_lr=0.05)  # SWA learning rate
         self.swa_model = swa_model
         self.swa_scheduler = swa_scheduler
-        
+    
         return [optimizer], [lr_scheduler]
+
 
     def on_train_end(self):
         # Update BatchNorm statistics with SWA model
