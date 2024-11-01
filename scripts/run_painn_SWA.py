@@ -9,7 +9,7 @@ import atomgnn.models.loss
 import atomgnn.models.utils
 
 from run_atoms import configure_cli, run
-### from torch.optim.swa_utils import AveragedModel, SWALR # New
+from torch.optim.swa_utils import AveragedModel, SWALR # New
 
 
 class LitPaiNNModel(L.LightningModule):
@@ -118,10 +118,10 @@ class LitPaiNNModel(L.LightningModule):
         # Update learning rate
         lr_scheduler = self.lr_schedulers()
         lr_scheduler.step()
-        # Update SWA model periodically -> My addition
-        ### if hasattr(self, 'swa_model') and self.current_epoch >= 100:  # Start SWA after epoch 100
-            ### self.swa_model.update_parameters(self.model)
-            ### self.swa_scheduler.step()
+        # Update SWA model periodicall New
+        if hasattr(self, 'swa_model') and self.current_epoch >= 100:  # Start SWA after epoch 100
+            self.swa_model.update_parameters(self.model) # New
+            self.swa_scheduler.step() # New
         
         return loss
 
@@ -133,9 +133,9 @@ class LitPaiNNModel(L.LightningModule):
             self.log("grad_norm", norms["grad_2.0_norm_total"])
 
     def validation_step(self, batch, batch_idx): # Changed
-        ### self.swa_model.eval()
-        ### with torch.no_grad():
-            ### preds = self.swa_model(batch)
+        self.swa_model.eval() # New
+        with torch.no_grad(): # New
+            preds = self.swa_model(batch) # New
         self._eval_step(batch, batch_idx, "val")
 
     def on_validation_epoch_end(self):
@@ -214,16 +214,16 @@ class LitPaiNNModel(L.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         # Initialize SWA Model
-        ### swa_model = AveragedModel(self.model)
-        ### swa_scheduler = SWALR(optimizer, swa_lr=0.05)  # SWA learning rate
-        ### self.swa_model = swa_model
-        ### self.swa_scheduler = swa_scheduler
+        swa_model = AveragedModel(self.model) # New
+        swa_scheduler = SWALR(optimizer, swa_lr=0.05)  # SWA learning rate
+        self.swa_model = swa_model # New
+        self.swa_scheduler = swa_scheduler # New
         
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
         
         ### def on_train_end(self): # New
             # Update BatchNorm statistics with SWA model
-            ### torch.optim.swa_utils.update_bn(self.train_dataloader(), self.swa_model)
+            torch.optim.swa_utils.update_bn(self.train_dataloader(), self.swa_model)
 
 
 
