@@ -221,9 +221,9 @@ class LitPaiNNModel(L.LightningModule):
         
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
         
-        ### def on_train_end(self): # New
-            # Update BatchNorm statistics with SWA model
-            torch.optim.swa_utils.update_bn(self.train_dataloader(), self.swa_model)
+    def on_train_end(self): # New
+        # Update BatchNorm statistics with SWA model
+        torch.optim.swa_utils.update_bn(self.train_dataloader(), self.swa_model) # New
 
 
 
