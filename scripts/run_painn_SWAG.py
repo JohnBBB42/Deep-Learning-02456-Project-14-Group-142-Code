@@ -275,14 +275,11 @@ class LitPaiNNModel(L.LightningModule):
 
 
     def on_train_end(self):
-      # Finalize SWA
-      torch.optim.swa_utils.update_bn(self.train_dataloader(), self.swa_model)
-      
-      # --- SWAG Moment Computation ---
-      self.swag_mean, self.swag_squared_mean = self._compute_swag_moments()
-      # Use SWA model as the default model for predictions
-      self.model = self.swa_model
-      # --------------------------------
+        # Remove BatchNorm update since there are no BatchNorm layers
+        # Finalize SWAG by computing mean and squared mean for posterior sampling
+        self.swag_mean, self.swag_squared_mean = self._compute_swag_moments()
+        # Use SWA model as the default model for predictions
+        self.model = self.swa_model
 
 
 def main():
