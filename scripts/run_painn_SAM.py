@@ -10,6 +10,55 @@ import atomgnn.models.utils
 
 from run_atoms import configure_cli, run
 
+import torch
+from torch.optim import Optimizer
+
+class SAMOptimizer(Optimizer):
+    def __init__(self, params, base_optimizer, rho=0.05, **kwargs):
+        """SAM optimizer wrapper for Sharpness-Aware Minimization (SAM).
+        Args:
+            params: Model parameters.
+            base_optimizer: Base optimizer class, e.g., torch.optim.Adam.
+            rho: Neighborhood size parameter for SAM.
+        """
+        defaults = dict(rho=rho, **kwargs)
+        super().__init__(params, defaults)
+        self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
+        self.param_groups = self.base_optimizer.param_groups
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        # First step: find local sharpness
+        assert closure is not None, "SAM requires a closure to compute gradients."
+        closure = torch.enable_grad()(closure)
+        loss = closure()  # Forward-backward pass
+
+        # Update parameters with gradient perturbation
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                e_w = p.grad * group["rho"] / (torch.norm(p.grad) + 1e-12)
+                p.add_(e_w)
+
+        # Second step: Update with perturbed loss gradients
+        closure = torch.enable_grad()(closure)
+        loss = closure()
+
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                p.sub_(e_w)  # Reset to original
+
+        # Base optimizer update
+        self.base_optimizer.step()
+
+        return loss
+
+    def zero_grad(self):
+        self.base_optimizer.zero_grad()
+
 
 class LitPaiNNModel(L.LightningModule):
     """PaiNN model."""
@@ -110,14 +159,23 @@ class LitPaiNNModel(L.LightningModule):
         return self.model(batch)
 
     def training_step(self, batch, batch_idx):
-        # Compute loss
-        preds = self.forward(batch)
-        loss = self.loss_function(preds, batch)
-        self.log("train_loss", loss)
-        # Update learning rate
-        lr_scheduler = self.lr_schedulers()
-        lr_scheduler.step()
-        return loss
+        """Training step modified to use SAM optimizer."""
+        def closure():
+            preds = self.forward(batch)
+            loss = self.loss_function(preds, batch)
+            loss.backward()  # Compute gradients for SAM
+            return loss
+    
+        # SAM Optimizer performs two forward-backward passes
+        self.optimizers().step(closure)
+        self.optimizers().zero_grad()
+    
+        # Log the original, unperturbed loss
+        unperturbed_loss = self.loss_function(self.forward(batch), batch)
+        self.log("train_loss", unperturbed_loss)
+    
+        return unperturbed_loss
+
 
     def on_before_optimizer_step(self, optimizer):
         # Log the total gradient norm of the model
@@ -196,9 +254,16 @@ class LitPaiNNModel(L.LightningModule):
         return {k: v.detach().cpu() for k, v in preds.items()}
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
+        base_optimizer = torch.optim.Adam
+        optimizer = SAMOptimizer(
+            self.parameters(),
+            base_optimizer=base_optimizer,
+            lr=self.init_lr,
+            rho=0.05  # SAM-specific neighborhood parameter
+        )
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
+
 
 
 def main():
