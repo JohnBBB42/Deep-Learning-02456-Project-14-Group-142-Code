@@ -223,8 +223,6 @@ class LitPaiNNModel(L.LightningModule):
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
     def on_train_end(self):
-        # Finalize SWA
-        torch.optim.swa_utils.update_bn(self.train_dataloader(), self.swa_model)
         # Replace model with SWA averaged model for evaluation
         self.model = self.swa_model
 
