@@ -1,5 +1,5 @@
 # Graph Representation learning on Molecular Datasets
-The initial aim of this project was to train the Polarizable Atom Interaction Neural Network (PaiNN) model(https://arxiv.org/pdf/2102.03150) on the Quantum Machines 9(QM9) data set, which is a database of around 134 thousands stable organic molecules with nine heavy atoms(https://arxiv.org/pdf/1703.00564).
+The initial aim of this project was to train the Polarizable Atom Interaction Neural Network (PaiNN) model(https://arxiv.org/pdf/2102.03150) on the Quantum Machines 9 (QM9) data set, which is a database of around 134 thousands stable organic molecules with nine heavy atoms(https://arxiv.org/pdf/1703.00564).
 
 The PaiNN model used in this project can be found under models as `/models/painn.py`
 
