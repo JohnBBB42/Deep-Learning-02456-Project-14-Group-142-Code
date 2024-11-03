@@ -116,11 +116,8 @@ class LitPaiNNModel(L.LightningModule):
         loss = self.loss_function(preds, batch)
         self.log("train_loss", loss)
         
-        # Update learning rate for the base scheduler
-        lr_scheduler = self.lr_schedulers()
-        lr_scheduler.step()
-        
         return loss  # Return loss to trigger the backward pass
+
 
     def on_train_epoch_end(self):
         # Apply SWA model updates at the end of each epoch
