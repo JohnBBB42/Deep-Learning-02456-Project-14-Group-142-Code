@@ -217,23 +217,34 @@ class LitPaiNNModel(L.LightningModule):
     def configure_optimizers(self):
         # Define base optimizer (Adam)
         optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
-    
+        
         # Define the primary scheduler (ExponentialLR) for initial phase
-        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
-    
+        lr_scheduler = {
+            "scheduler": torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996),
+            "interval": "epoch", 
+            "frequency": 1,
+            "name": "ExponentialLR",
+            "reduce_on_plateau": False,
+            "optimizer": optimizer
+        }
+        
         # Wrap the model in AveragedModel for SWA
         self.swa_model = AveragedModel(self.model)
         
         # Define the SWA scheduler (SWALR) for the final phase
-        swa_scheduler = SWALR(optimizer, swa_lr=0.05)
+        swa_scheduler = {
+            "scheduler": SWALR(optimizer, swa_lr=0.05),
+            "interval": "epoch", 
+            "frequency": 1,
+            "name": "SWALR",
+            "reduce_on_plateau": False,
+            "optimizer": optimizer
+        }
         
         # Return both the optimizer and the two schedulers
         return {
             "optimizer": optimizer,
-            "lr_scheduler": [
-                {"scheduler": lr_scheduler, "interval": "epoch", "name": "ExponentialLR"},
-                {"scheduler": swa_scheduler, "interval": "epoch", "name": "SWALR"}
-            ]
+            "lr_scheduler": [lr_scheduler, swa_scheduler]
         }
 
 
