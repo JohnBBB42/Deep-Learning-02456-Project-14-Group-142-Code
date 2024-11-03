@@ -217,14 +217,18 @@ class LitPaiNNModel(L.LightningModule):
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         
         # Initialize the SWA model and SWA scheduler
-        self.swa_model = AveragedModel(self)  # Create an SWA wrapper around the model
+        self.swa_model = AveragedModel(self.model)  # Create an SWA wrapper around the actual model
         self.swa_scheduler = SWALR(optimizer, anneal_strategy="cos", anneal_epochs=10, swa_lr=5e-5)
         
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
+
     def on_train_end(self):
         # Replace model with SWA averaged model for evaluation
         self.model = self.swa_model
+        # Save the SWA model state for later use
+        torch.save(self.swa_model.state_dict(), "swa_checkpoint.ckpt")
+
 
 
 def main():
@@ -233,8 +237,53 @@ def main():
     cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
     cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
     cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
-    run(cli, LitPaiNNModel)
+    
+    # Parse arguments and instantiate model and data
+    args = cli.parse_args()
+    model = LitPaiNNModel(**args.model)
+    data = args.data  # Assuming this returns a DataModule
 
+    # Initialize a trainer
+    trainer = L.Trainer.from_argparse_args(args.trainer)
+
+    # Run training
+    trainer.fit(model, datamodule=data)
+
+    # Validation using SWA checkpoint
+    val_metrics = trainer.validate(model=model, ckpt_path="swa_checkpoint.ckpt", datamodule=data)
+
+def main():
+    cli = configure_cli("run_painn")
+    cli.add_lightning_class_args(LitPaiNNModel, "model")
+    cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
+    cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
+    cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
+    
+    # Parse arguments and instantiate model and data
+    args = cli.parse_args()
+    model = LitPaiNNModel(**args.model)
+    data = args.data  # Assuming this returns a DataModule
+
+    # Everythin below here new
+    
+    # Initialize a Trainer with debugging in mind
+    trainer = L.Trainer(
+        max_epochs=1,  # Use a small number of epochs
+        gpus=1 if torch.cuda.is_available() else 0,
+        fast_dev_run=True,  # Run a quick check on a batch
+        callbacks=[EarlyStopping(monitor="train_loss", patience=1)],  # Optional: early stopping
+    )
+
+    # Run training (fast dev run will only use a single batch)
+    trainer.fit(model, datamodule=data) # Needed
+
+    # Validation using SWA checkpoint if available
+    # You could also try to load "swa_checkpoint.ckpt" if it exists
+    try:
+        val_metrics = trainer.validate(model=model, ckpt_path="swa_checkpoint.ckpt", datamodule=data) # Needed
+        print(val_metrics)
+    except Exception as e:
+        print(f"Validation failed: {e}")
 
 if __name__ == '__main__':
     main()
