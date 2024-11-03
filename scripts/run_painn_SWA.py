@@ -2,6 +2,8 @@
 
 import lightning as L
 import torch
+from lightning.pytorch.cli import LightningCLI
+from lightning.pytorch.callbacks import StochasticWeightAveraging
 
 import _atomgnn  # noqa: F401
 import atomgnn.models.painn
@@ -9,7 +11,6 @@ import atomgnn.models.loss
 import atomgnn.models.utils
 
 from run_atoms import configure_cli, run
-from lightning.pytorch.callbacks import StochasticWeightAveraging
 
 
 class LitPaiNNModel(L.LightningModule):
@@ -210,8 +211,10 @@ class LitPaiNNModel(L.LightningModule):
 
 def main():
     cli = configure_cli("run_painn_SWA")
-    cli.trainer_defaults["callbacks"] = [StochasticWeightAveraging(swa_lrs=1e-4)]
-    # cli.trainer_defaults["callbacks"] = [StochasticWeightAveraging(swa_epoch_start=10, swa_lrs=1e-4)]
+    # Pass the SWA callback via trainer_kwargs
+    run(cli, LitPaiNNModel, trainer_kwargs={
+        'callbacks': [StochasticWeightAveraging(swa_lrs=1e-4)]
+    })
     cli.add_lightning_class_args(LitPaiNNModel, "model")
     cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
     cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
