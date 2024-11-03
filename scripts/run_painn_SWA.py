@@ -10,7 +10,7 @@ import atomgnn.models.painn
 import atomgnn.models.loss
 import atomgnn.models.utils
 
-from run_atoms import configure_cli, run
+#from run_atoms import configure_cli, run
 
 
 class LitPaiNNModel(L.LightningModule):
@@ -208,17 +208,24 @@ class LitPaiNNModel(L.LightningModule):
         #lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         return optimizer
 
-
 def main():
-    cli = configure_cli("run_painn_SWA")
-    cli.add_lightning_class_args(LitPaiNNModel, "model")
-    cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
-    cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
-    cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
-    # Pass the SWA callback via trainer_kwargs
-    run(cli, LitPaiNNModel, trainer_kwargs={
-        'callbacks': [StochasticWeightAveraging(swa_lrs=1e-4)]
-    })
+    LightningCLI(
+        model_class=LitPaiNNModel,
+        trainer_defaults={
+            'callbacks': [StochasticWeightAveraging(swa_lrs=1e-4)]
+        },
+        save_config_callback=None,  # Optional: prevents saving config files if not needed
+    )
+#def main():
+#    cli = configure_cli("run_painn_SWA")
+#    cli.add_lightning_class_args(LitPaiNNModel, "model")
+#    cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
+#    cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
+#    cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
+#    # Pass the SWA callback via trainer_kwargs
+#    run(cli, LitPaiNNModel, trainer_kwargs={
+#        'callbacks': [StochasticWeightAveraging(swa_lrs=1e-4)]
+#    })
 
 
 if __name__ == '__main__':
