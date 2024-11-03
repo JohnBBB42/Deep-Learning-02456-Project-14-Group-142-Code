@@ -226,8 +226,16 @@ class LitPaiNNModel(L.LightningModule):
     def on_train_end(self):
         # Replace model with SWA averaged model for evaluation
         self.model = self.swa_model
-        # Save the SWA model state for later use
+    
+        # Save the SWA model state
         torch.save(self.swa_model.state_dict(), "swa_checkpoint.ckpt")
+    
+        # Validation step using the Trainer instance
+        if self.trainer:
+            # Run validation with the SWA checkpoint
+            val_metrics = self.trainer.validate(model=self, ckpt_path="swa_checkpoint.ckpt")
+            print(val_metrics)
+
 
 
 
@@ -237,51 +245,7 @@ def main():
     cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
     cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
     cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
-    
-    # Parse arguments and instantiate model and data
-    args = cli.parse_args()
-    model = LitPaiNNModel(**args.model)
-    data = args.data  # Assuming this returns a DataModule
-
-    # Initialize a trainer
-    trainer = L.Trainer.from_argparse_args(args.trainer)
-
-    # Run training
-    trainer.fit(model, datamodule=data)
-
-    # Validation using SWA checkpoint
-    val_metrics = trainer.validate(model=model, ckpt_path="swa_checkpoint.ckpt", datamodule=data)
-
-def main():
-    cli = configure_cli("run_painn")
-    cli.add_lightning_class_args(LitPaiNNModel, "model")
-    cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
-    cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
-    cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
-    
-    # Parse arguments and instantiate model and data
-    args = cli.parse_args()
-    model = LitPaiNNModel(**args.model)
-    data = args.data  # Assuming this returns a DataModule
-
-    # Everythin below here new
-    
-    # Initialize a Trainer
-    trainer = L.Trainer(
-        max_epochs=1,  # Run for only 1 epoch to quickly test
-        fast_dev_run=False  # Set to True if you want a super-fast run (1 batch of training, validation, test)
-    )
-
-    # Run training (fast dev run will only use a single batch)
-    trainer.fit(model, datamodule=data) # Needed
-
-    # Validation using SWA checkpoint if available
-    # You could also try to load "swa_checkpoint.ckpt" if it exists
-    try:
-        val_metrics = trainer.validate(model=model, ckpt_path="swa_checkpoint.ckpt", datamodule=data) # Needed
-        print(val_metrics)
-    except Exception as e:
-        print(f"Validation failed: {e}")
+    run(cli, LitPaiNNModel)  # Handles training, including the modified SWA validation
 
 if __name__ == '__main__':
     main()
