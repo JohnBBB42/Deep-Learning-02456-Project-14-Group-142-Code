@@ -266,11 +266,10 @@ def main():
 
     # Everythin below here new
     
-    # Initialize a Trainer with debugging in mind
+    # Initialize a Trainer
     trainer = L.Trainer(
-        max_epochs=1,  # Use a small number of epochs
-        gpus=1 if torch.cuda.is_available() else 0,
-        fast_dev_run=True,  # Run a quick check on a batch
+        max_epochs=1,  # Run for only 1 epoch to quickly test
+        fast_dev_run=False  # Set to True if you want a super-fast run (1 batch of training, validation, test)
     )
 
     # Run training (fast dev run will only use a single batch)
