@@ -2,6 +2,7 @@
 
 import lightning as L
 import torch
+import torch.nn as nn
 
 import _atomgnn  # noqa: F401
 import atomgnn.models.painn
