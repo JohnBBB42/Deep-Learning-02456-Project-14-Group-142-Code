@@ -214,6 +214,7 @@ class LitPaiNNModel(L.LightningModule):
         preds = self.forward(batch)
         return {k: v.detach().cpu() for k, v in preds.items()}
 
+
     def configure_optimizers(self):
         # Define base optimizer (Adam)
         optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
@@ -225,7 +226,6 @@ class LitPaiNNModel(L.LightningModule):
             "frequency": 1,
             "name": "ExponentialLR",
             "reduce_on_plateau": False,
-            "optimizer": optimizer
         }
         
         # Wrap the model in AveragedModel for SWA
@@ -238,16 +238,16 @@ class LitPaiNNModel(L.LightningModule):
             "frequency": 1,
             "name": "SWALR",
             "reduce_on_plateau": False,
-            "optimizer": optimizer
         }
         
-        # Return both the optimizer and the two schedulers
+        # Return the optimizer and the schedulers separately, without linking each scheduler to the optimizer
         return {
             "optimizer": optimizer,
             "lr_scheduler": [lr_scheduler, swa_scheduler]
         }
-
-
+    
+    
+    
     def on_train_end(self):
         # Check if model contains BatchNorm layers
         has_batchnorm = any(isinstance(layer, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d))
