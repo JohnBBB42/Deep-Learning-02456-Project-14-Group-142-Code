@@ -120,7 +120,7 @@ class LitPaiNNModel(L.LightningModule):
         return loss  # Return loss to trigger the backward pass
 
 
-    ddef on_train_epoch_end(self):
+    def on_train_epoch_end(self):
         # Apply SWA model updates at the end of each epoch
         if hasattr(self, "swa_model"):
             self.swa_model.update_parameters(self.model)  # Pass the correct model instance
@@ -233,10 +233,11 @@ class LitPaiNNModel(L.LightningModule):
             # Saving the SWA checkpoint
             self.trainer.save_checkpoint("swa_checkpoint.ckpt")
     
-        # Validation step using the Trainer instance with SWA checkpoint
+        # Validation step using the Trainer instance with SWA model directly
         if self.trainer:
             try:
-                val_metrics = self.trainer.validate(model=self, ckpt_path="swa_checkpoint.ckpt")
+                # No need to specify ckpt_path here, as SWA model is already active
+                val_metrics = self.trainer.validate(model=self)
                 print(val_metrics)
             except Exception as e:
                 print(f"Validation failed: {e}")
