@@ -121,21 +121,20 @@ class LitPaiNNModel(L.LightningModule):
         preds = self.forward(batch)
         loss = self.loss_function(preds, batch)
         self.log("train_loss", loss)
-    
-        # Determine which scheduler to step
+        
+        # Determine which scheduler to step based on the epoch
         if self.current_epoch >= self.swa_start_epoch:
             self.log("SWA_active", True)
             # Apply SWA averaging and step SWALR
             self.swa_model.update_parameters(self.model)
-            swa_scheduler = self.lr_schedulers("SWALR")
-            swa_scheduler.step()
+            self.trainer.lr_scheduler_configs[1].scheduler.step()  # Manually step SWALR
         else:
             self.log("SWA_active", False)
             # Step the primary scheduler (ExponentialLR)
-            lr_scheduler = self.lr_schedulers("ExponentialLR")
-            lr_scheduler.step()
-        
+            self.trainer.lr_scheduler_configs[0].scheduler.step()  # Manually step ExponentialLR
+    
         return loss
+
 
 
     def on_before_optimizer_step(self, optimizer):
@@ -216,46 +215,30 @@ class LitPaiNNModel(L.LightningModule):
 
 
     def configure_optimizers(self):
-        # Define base optimizer (Adam)
+        # Define the base optimizer
         optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
-        
-        # Define the primary scheduler (ExponentialLR) for initial phase
-        lr_scheduler = {
-            "scheduler": torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996),
-            "interval": "epoch", 
-            "frequency": 1,
-            "name": "ExponentialLR",
-            "reduce_on_plateau": False,
-        }
-        
-        # Wrap the model in AveragedModel for SWA
-        self.swa_model = AveragedModel(self.model)
+    
+        # Define the primary scheduler (ExponentialLR)
+        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         
         # Define the SWA scheduler (SWALR) for the final phase
-        swa_scheduler = {
-            "scheduler": SWALR(optimizer, swa_lr=0.05),
-            "interval": "epoch", 
-            "frequency": 1,
-            "name": "SWALR",
-            "reduce_on_plateau": False,
-        }
+        swa_scheduler = SWALR(optimizer, swa_lr=0.05)
         
-        # Return the optimizer and the schedulers separately, without linking each scheduler to the optimizer
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": [lr_scheduler, swa_scheduler]
-        }
+        # Return optimizer with schedulers as separate items for manual control
+        return [optimizer], [{"scheduler": lr_scheduler, "interval": "epoch", "name": "ExponentialLR"},
+                             {"scheduler": swa_scheduler, "interval": "epoch", "name": "SWALR"}]
     
-    
-    
-    def on_train_end(self):
-        # Check if model contains BatchNorm layers
-        has_batchnorm = any(isinstance(layer, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d))
-                            for layer in self.swa_model.modules())
         
-        if has_batchnorm:
-            # Update BatchNorm statistics if BatchNorm layers are present
-            update_bn(self.train_dataloader(), self.swa_model)
+        
+        
+        def on_train_end(self):
+            # Check if model contains BatchNorm layers
+            has_batchnorm = any(isinstance(layer, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d))
+                                for layer in self.swa_model.modules())
+            
+            if has_batchnorm:
+                # Update BatchNorm statistics if BatchNorm layers are present
+                update_bn(self.train_dataloader(), self.swa_model)
 
 def main():
     cli = configure_cli("run_painn")
