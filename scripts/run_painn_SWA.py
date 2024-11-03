@@ -230,17 +230,15 @@ class LitPaiNNModel(L.LightningModule):
         
         # Save the SWA model state properly using Trainer's save_checkpoint method
         if self.trainer:
-            # Saving the SWA checkpoint
             self.trainer.save_checkpoint("swa_checkpoint.ckpt")
-    
-        # Validation step using the Trainer instance with SWA model directly
-        if self.trainer:
-            try:
-                # No need to specify ckpt_path here, as SWA model is already active
-                val_metrics = self.trainer.validate(model=self)
-                print(val_metrics)
-            except Exception as e:
-                print(f"Validation failed: {e}")
+        
+        # TEMPORARY: Comment out validation to bypass `val_dataloader` requirement
+        # if self.trainer:
+        #     try:
+        #         val_metrics = self.trainer.validate(model=self)
+        #         print(val_metrics)
+        #     except Exception as e:
+        #         print(f"Validation failed: {e}")
 
 
 
