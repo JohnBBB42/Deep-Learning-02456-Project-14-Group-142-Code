@@ -10,6 +10,7 @@ import atomgnn.models.utils
 
 from run_atoms import configure_cli, run
 from torch.optim.swa_utils import AveragedModel, SWALR
+from lightning.pytorch import Trainer
 
 
 class LitPaiNNModel(L.LightningModule):
@@ -119,10 +120,12 @@ class LitPaiNNModel(L.LightningModule):
         return loss  # Return loss to trigger the backward pass
 
 
-    def on_train_epoch_end(self):
+    ddef on_train_epoch_end(self):
         # Apply SWA model updates at the end of each epoch
-        self.swa_model.update_parameters(self)
-        self.swa_scheduler.step()
+        if hasattr(self, "swa_model"):
+            self.swa_model.update_parameters(self.model)  # Pass the correct model instance
+            self.swa_scheduler.step()
+
 
     def on_before_optimizer_step(self, optimizer):
         # Log the total gradient norm of the model
@@ -201,10 +204,11 @@ class LitPaiNNModel(L.LightningModule):
         if self.forces or self.stress:
             torch.set_grad_enabled(True)
         
-        # Use SWA model for predictions if it's already finalized
-        model = self.swa_model if self.trainer.state.fn == "test" else self.model
+        # Use SWA model for predictions if it is initialized and if testing phase
+        model = self.swa_model if getattr(self, "swa_model", None) and self.trainer.state.fn == "test" else self.model
         preds = model(batch)
         return {k: v.detach().cpu() for k, v in preds.items()}
+
 
 
     def configure_optimizers(self):
@@ -223,15 +227,22 @@ class LitPaiNNModel(L.LightningModule):
     def on_train_end(self):
         # Replace model with SWA averaged model for evaluation
         self.model = self.swa_model
-    
-        # Save the SWA model state
-        torch.save(self.swa_model.state_dict(), "swa_checkpoint.ckpt")
-    
-        # Validation step using the Trainer instance
+        
+        # Save the SWA model state properly using Trainer's save_checkpoint method
         if self.trainer:
-            # Run validation with the SWA checkpoint
-            val_metrics = self.trainer.validate(model=self, ckpt_path="swa_checkpoint.ckpt")
-            print(val_metrics)
+            # Saving the SWA checkpoint
+            self.trainer.save_checkpoint("swa_checkpoint.ckpt")
+    
+        # Validation step using the Trainer instance with SWA checkpoint
+        if self.trainer:
+            try:
+                val_metrics = self.trainer.validate(model=self, ckpt_path="swa_checkpoint.ckpt")
+                print(val_metrics)
+            except Exception as e:
+                print(f"Validation failed: {e}")
+
+
+
 
 
 
@@ -242,6 +253,7 @@ def main():
     cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
     cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
     cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
+    trainer = Trainer(log_every_n_steps=10, max_steps=10)
     run(cli, LitPaiNNModel)  # Handles training, including the modified SWA validation
 
 if __name__ == '__main__':
