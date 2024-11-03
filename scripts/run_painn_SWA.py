@@ -211,15 +211,14 @@ class LitPaiNNModel(L.LightningModule):
 
 def main():
     cli = configure_cli("run_painn_SWA")
-    # Pass the SWA callback via trainer_kwargs
-    run(cli, LitPaiNNModel, trainer_kwargs={
-        'callbacks': [StochasticWeightAveraging(swa_lrs=1e-4)]
-    })
     cli.add_lightning_class_args(LitPaiNNModel, "model")
     cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
     cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
     cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
-    run(cli, LitPaiNNModel)
+    # Pass the SWA callback via trainer_kwargs
+    run(cli, LitPaiNNModel, trainer_kwargs={
+        'callbacks': [StochasticWeightAveraging(swa_lrs=1e-4)]
+    })
 
 
 if __name__ == '__main__':
