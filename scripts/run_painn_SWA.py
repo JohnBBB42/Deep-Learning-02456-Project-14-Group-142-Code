@@ -2,7 +2,6 @@
 
 import lightning as L
 import torch
-import torch.nn as nn
 
 import _atomgnn  # noqa: F401
 import atomgnn.models.painn
@@ -10,7 +9,8 @@ import atomgnn.models.loss
 import atomgnn.models.utils
 
 from run_atoms import configure_cli, run
-from torch.optim.swa_utils import AveragedModel, SWALR, update_bn
+from lightning.pytorch.callbacks import StochasticWeightAveraging
+
 
 class LitPaiNNModel(L.LightningModule):
     """PaiNN model."""
@@ -66,7 +66,6 @@ class LitPaiNNModel(L.LightningModule):
         self.forces = forces
         self.stress = stress
         self.init_lr = init_lr
-        self.swa_start_epoch = 406  # Define SWA start epoch in __init__
         # Initialize model
         model: torch.nn.Module = atomgnn.models.painn.PaiNN(
             node_size=node_size,
@@ -96,7 +95,6 @@ class LitPaiNNModel(L.LightningModule):
             stress_property=self.stress_property,
         )
         self.model = model
-        self.swa_model = AveragedModel(self.model)
         # Initialize loss function
         self.loss_function = atomgnn.models.loss.MSELoss(
             target_property=self.target_property,
@@ -110,33 +108,23 @@ class LitPaiNNModel(L.LightningModule):
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
     def forward(self, batch):
-        # Use SWA model if in SWA phase (after swa_start_epoch)
-        if self.current_epoch >= self.swa_start_epoch:  # Adjust this if necessary
-            return self.swa_model(batch)
-        else:
-            return self.model(batch)
-
+        return self.model(batch)
 
     def training_step(self, batch, batch_idx):
         # Compute loss
         preds = self.forward(batch)
         loss = self.loss_function(preds, batch)
         self.log("train_loss", loss)
+        # Update learning rate
+        #lr_scheduler = self.lr_schedulers()
+        #lr_scheduler.step()
         
-        # Determine which scheduler to step based on the epoch
-        if self.current_epoch >= self.swa_start_epoch:
-            self.log("SWA_active", True)
-            # Apply SWA averaging and step SWALR
-            self.swa_model.update_parameters(self.model)
-            self.trainer.lr_scheduler_configs[1].scheduler.step()  # Manually step SWALR
-        else:
-            self.log("SWA_active", False)
-            # Step the primary scheduler (ExponentialLR)
-            self.trainer.lr_scheduler_configs[0].scheduler.step()  # Manually step ExponentialLR
-    
         return loss
-
-
+        
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        optimizer = self.optimizers()
+        current_lr = optimizer.param_groups[0]['lr']
+        self.log('learning_rate', current_lr, prog_bar=True, on_step=True)
 
     def on_before_optimizer_step(self, optimizer):
         # Log the total gradient norm of the model
@@ -214,35 +202,16 @@ class LitPaiNNModel(L.LightningModule):
         preds = self.forward(batch)
         return {k: v.detach().cpu() for k, v in preds.items()}
 
-
     def configure_optimizers(self):
-        # Define the base optimizer
         optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
-    
-        # Define the primary scheduler (ExponentialLR)
-        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
-        
-        # Define the SWA scheduler (SWALR) for the final phase
-        swa_scheduler = SWALR(optimizer, swa_lr=0.05)
-        
-        # Return optimizer with schedulers as separate items for manual control
-        return [optimizer], [{"scheduler": lr_scheduler, "interval": "epoch", "name": "ExponentialLR"},
-                             {"scheduler": swa_scheduler, "interval": "epoch", "name": "SWALR"}]
-    
-        
-        
-        
-        def on_train_end(self):
-            # Check if model contains BatchNorm layers
-            has_batchnorm = any(isinstance(layer, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d))
-                                for layer in self.swa_model.modules())
-            
-            if has_batchnorm:
-                # Update BatchNorm statistics if BatchNorm layers are present
-                update_bn(self.train_dataloader(), self.swa_model)
+        #lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
+        return optimizer
+
 
 def main():
-    cli = configure_cli("run_painn")
+    cli = configure_cli("run_painn_SWA")
+    cli.trainer_defaults["callbacks"] = [StochasticWeightAveraging(swa_lrs=1e-4)]
+    # cli.trainer_defaults["callbacks"] = [StochasticWeightAveraging(swa_epoch_start=10, swa_lrs=1e-4)]
     cli.add_lightning_class_args(LitPaiNNModel, "model")
     cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
     cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
