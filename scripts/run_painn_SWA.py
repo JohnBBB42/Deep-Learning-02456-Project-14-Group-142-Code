@@ -271,7 +271,6 @@ def main():
         max_epochs=1,  # Use a small number of epochs
         gpus=1 if torch.cuda.is_available() else 0,
         fast_dev_run=True,  # Run a quick check on a batch
-        callbacks=[EarlyStopping(monitor="train_loss", patience=1)],  # Optional: early stopping
     )
 
     # Run training (fast dev run will only use a single batch)
