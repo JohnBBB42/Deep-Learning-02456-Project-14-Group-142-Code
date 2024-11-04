@@ -201,7 +201,7 @@ class LitPaiNNModel(L.LightningModule):
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
 class LitSWAGPaiNNModel(LitPaiNNModel):
-"""SWAG model extending LitPaiNNModel."""
+    """SWAG model extending LitPaiNNModel."""
 
     def __init__(self, swa_start=0.8, max_num_models=20, no_cov_mat=True, **kwargs):
         super().__init__(**kwargs)
