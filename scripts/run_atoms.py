@@ -709,10 +709,10 @@ def configure_cli(default_job_name, add_trainer_args=True, add_data_args=True):
                      default=os.getenv("JOB_VERSION", datetime.now().strftime("%Y%m%d_%H%M%S")),
                      help="Job version (default is a timestamp).")
     # SWAG Arguments
-    cli.add_argument("--use_swag", action=ActionYesNo, help="Enable SWAG.")
+    cli.add_argument("--use_swag", type=bool, default=False, help="Enable SWAG.")
     cli.add_argument("--swag_swa_start", type=float, default=0.8, help="When to start SWAG.")
     cli.add_argument("--swag_max_num_models", type=int, default=20, help="Max number of models to collect.")
-    cli.add_argument("--no_cov_mat", action=ActionYesNo, help="Do not store covariance matrix in SWAG.")
+    cli.add_argument("--no_cov_mat", type=bool, default=True, help="Do not store covariance matrix in SWAG.")
     cli.add_argument("--num_swag_samples", type=int, default=30, help="Number of samples for SWAG prediction.")
     # Trainer
     if add_trainer_args:
