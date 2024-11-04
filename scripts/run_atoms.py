@@ -10,6 +10,7 @@ import lightning as L
 import torch
 from lightning.pytorch.cli import LightningArgumentParser
 from jsonargparse import ActionConfigFile, ActionYesNo
+from lightning.pytorch.callbacks import StochasticWeightAveraging
 
 import _atomgnn  # noqa: F401
 import atomgnn.data.ase
