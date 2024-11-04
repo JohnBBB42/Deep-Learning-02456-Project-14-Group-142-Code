@@ -564,15 +564,15 @@ def run(cli, lit_model_cls, lit_data_cls=LitData):
             "_avg_num_neighbors": stats["avg_num_neighbors"],
         })
         
-        if cfg.trainer.use_swag:
+        # Instantiate the appropriate model
+        if cfg.use_swag:
             model_kwargs.update({
-                "swa_start": cfg.trainer.swag_swa_start,
-                "max_num_models": cfg.trainer.swag_max_num_models,
-                "no_cov_mat": cfg.trainer.no_cov_mat,
+                "swa_start": cfg.swag_swa_start,
+                "max_num_models": cfg.swag_max_num_models,
+                "no_cov_mat": cfg.no_cov_mat,
             })
-            model = LitSWAGPaiNNModel(**model_kwargs)
-        else:
-            model = lit_model_cls(**model_kwargs)
+
+        model = lit_model_cls(**model_kwargs)
 
         if cfg.compile:
             model = torch.compile(model)
