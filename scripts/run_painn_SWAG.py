@@ -8,7 +8,7 @@ import atomgnn.models.painn
 import atomgnn.models.loss
 import atomgnn.models.utils
 
-from run_atoms import configure_cli, run, LitData
+from run_atoms import configure_cli, run
 
 
 class LitPaiNNModel(L.LightningModule):
@@ -287,11 +287,21 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
 
 def main():
     cli = configure_cli("run_painn")
+    # Add model-specific arguments
     cli.add_lightning_class_args(LitPaiNNModel, "model")
+    # Link arguments as needed
     cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
     cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
     cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
-    run(cli, LitPaiNNModel)
+
+    # Run the script
+    cfg = cli.parse_args()
+    if cfg.use_swag:
+        lit_model_cls = LitSWAGPaiNNModel
+    else:
+        lit_model_cls = LitPaiNNModel
+
+    run(cli, lit_model_cls=lit_model_cls)
 
 
 if __name__ == '__main__':
