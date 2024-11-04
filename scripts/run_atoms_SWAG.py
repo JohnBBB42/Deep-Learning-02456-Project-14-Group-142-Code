@@ -8,6 +8,7 @@ from pathlib import Path
 
 import lightning as L
 import torch
+import torch.nn as nn
 from lightning.pytorch.cli import LightningArgumentParser
 from jsonargparse import ActionConfigFile, ActionYesNo
 from lightning.pytorch.callbacks import StochasticWeightAveraging
@@ -200,6 +201,96 @@ class LitData(L.LightningDataModule):
             "avg_num_neighbors": running_num_edges / running_num_nodes,
         }
 
+class LitSWAGPaiNNModel(L.LightningModule):
+    """SWAG model wrapping LitPaiNNModel."""
+
+    def __init__(self, base_model, swa_start=0.8, max_num_models=20, no_cov_mat=True):
+        super().__init__()
+        self.base_model = base_model
+        self.swa_start = swa_start
+        self.max_num_models = max_num_models
+        self.no_cov_mat = no_cov_mat
+        self.num_parameters = sum(p.numel() for p in self.base_model.parameters())
+        self.register_buffer('mean', torch.zeros(self.num_parameters))
+        self.register_buffer('sq_mean', torch.zeros(self.num_parameters))
+        if not self.no_cov_mat:
+            self.register_buffer('cov_mat_sqrt', torch.zeros((self.max_num_models, self.num_parameters)))
+        self.num_models_collected = 0
+        self.save_hyperparameters(ignore=['base_model'])
+
+    def forward(self, batch):
+        return self.base_model(batch)
+
+    def training_step(self, batch, batch_idx):
+        loss = self.base_model.training_step(batch, batch_idx)
+        current_epoch = self.current_epoch
+        max_epochs = self.trainer.max_epochs
+        if current_epoch >= self.swa_start * max_epochs:
+            self.collect_model()
+        return loss
+
+    def collect_model(self):
+        param_vector = torch.nn.utils.parameters_to_vector(self.base_model.parameters())
+        if self.num_models_collected == 0:
+            self.mean.data.copy_(param_vector)
+            self.sq_mean.data.copy_(param_vector ** 2)
+        else:
+            delta = param_vector - self.mean.data
+            self.mean.data += delta / (self.num_models_collected + 1)
+            delta2 = param_vector ** 2 - self.sq_mean.data
+            self.sq_mean.data += delta2 / (self.num_models_collected + 1)
+        if not self.no_cov_mat and self.num_models_collected < self.max_num_models:
+            self.cov_mat_sqrt[self.num_models_collected].data.copy_(param_vector - self.mean.data)
+        self.num_models_collected += 1
+
+    def configure_optimizers(self):
+        return self.base_model.configure_optimizers()
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=None):
+        self.sample(scale=1.0, cov=not self.no_cov_mat)
+        preds = self.base_model.predict_step(batch, batch_idx, dataloader_idx)
+        return preds
+
+    def sample(self, scale=1.0, cov=False):
+        mean = self.mean
+        sq_mean = self.sq_mean
+        var = sq_mean - mean ** 2
+        std = torch.sqrt(var + 1e-30)
+        z = torch.randn(self.num_parameters, device=mean.device)
+        if cov and not self.no_cov_mat:
+            cov_mat_sqrt = self.cov_mat_sqrt[:self.num_models_collected]
+            z_cov = torch.randn(self.num_models_collected, device=mean.device)
+            sample = mean + scale * (z * std + cov_mat_sqrt.t().matmul(z_cov) / (self.num_models_collected - 1) ** 0.5)
+        else:
+            sample = mean + scale * z * std
+        torch.nn.utils.vector_to_parameters(sample, self.base_model.parameters())
+
+    def on_save_checkpoint(self, checkpoint):
+        checkpoint['mean'] = self.mean
+        checkpoint['sq_mean'] = self.sq_mean
+        checkpoint['num_models_collected'] = self.num_models_collected
+        if not self.no_cov_mat:
+            checkpoint['cov_mat_sqrt'] = self.cov_mat_sqrt
+
+    def on_load_checkpoint(self, checkpoint):
+        self.mean = checkpoint['mean']
+        self.sq_mean = checkpoint['sq_mean']
+        self.num_models_collected = checkpoint['num_models_collected']
+        if not self.no_cov_mat:
+            self.cov_mat_sqrt = checkpoint['cov_mat_sqrt']
+            
+    def on_train_end(self):
+        # Save SWAG buffers
+        swag_state = {
+            'mean': self.mean,
+            'sq_mean': self.sq_mean,
+            'num_models_collected': self.num_models_collected,
+        }
+        if not self.no_cov_mat:
+            swag_state['cov_mat_sqrt'] = self.cov_mat_sqrt
+        swag_ckpt_path = Path(self.trainer.log_dir) / "swag.ckpt"
+        torch.save(swag_state, swag_ckpt_path)
+
 
 class CsvPredictionWriter(L.pytorch.callbacks.BasePredictionWriter):
     """Write predictions to CSV file with one line per data point.
@@ -319,15 +410,32 @@ def predict(cfg, lit_data_cls, lit_model_cls, trainer):
         assert cfg.checkpoint, "Missing required argument: --checkpoint"
         ckpt_path = Path(cfg.checkpoint)
         assert ckpt_path.exists(), f"Checkpoint not found: {ckpt_path}"
-        model = lit_model_cls.load_from_checkpoint(ckpt_path)
+        base_model = lit_model_cls.load_from_checkpoint(ckpt_path)
     else:
         ckpt_path = Path(trainer.log_dir) / "checkpoints/best.ckpt"
         assert ckpt_path.exists(), f"Checkpoint not found: {ckpt_path}"
-        model = lit_model_cls.load_from_checkpoint(ckpt_path)
+        base_model = lit_model_cls.load_from_checkpoint(ckpt_path)
     if cfg.compile:
-        model = torch.compile(model)
+        base_model = torch.compile(base_model)
+    # Wrap model with SWAG if enabled
     if cfg.trainer.use_swag:
-        # Ensure we perform multiple predictions to estimate uncertainties
+        model = LitSWAGPaiNNModel(
+            base_model=base_model,
+            swa_start=cfg.trainer.swag_swa_start,
+            max_num_models=cfg.trainer.swag_max_num_models,
+            no_cov_mat=cfg.trainer.no_cov_mat,
+        )
+        # Load SWAG buffers from checkpoint if necessary
+        swag_ckpt_path = Path(trainer.log_dir) / "swag.ckpt"
+        if swag_ckpt_path.exists():
+            swag_state = torch.load(swag_ckpt_path, map_location='cpu')
+            model.load_state_dict(swag_state, strict=False)
+        else:
+            logging.warning(f"SWAG checkpoint not found at {swag_ckpt_path}. Using model without SWAG.")
+    else:
+        model = base_model
+    # Predict
+    if cfg.trainer.use_swag:
         num_samples = cfg.num_swag_samples if hasattr(cfg, 'num_swag_samples') else 30
         all_predictions = []
         for _ in range(num_samples):
@@ -340,37 +448,38 @@ def predict(cfg, lit_data_cls, lit_model_cls, trainer):
                     accelerator=cfg.trainer.accelerator,
                     logger=False,
                     callbacks=[prediction_writer],
-                    limit_predict_batches=limit_predict_batches,
                     inference_mode=False,
                 )
                 preds = predicter.predict(model, dataloader, return_predictions=True)
                 predictions.append(preds)
             all_predictions.append(predictions)
         # Aggregate predictions to compute mean and variance
-        # Your code to compute mean and uncertainty
-    else:
-        model = base_model
-    # Predict
-    # TODO: Trainer.predict does not work
-    # predictions = trainer.predict(model, datamodule=data)
-    # Alternative solution
-    for name, dataloader in dataloaders.items():
-        if dataloader is None:
-            logging.info(f"Skip split: {name}")
-            continue
-        else:
-            logging.info(f"Predict split: {name}")
-            prediction_writer = CsvPredictionWriter(trainer.log_dir, name=name)
-            limit_predict_batches = 2 if cfg.smoketest else 1.0
-            predicter = L.Trainer(
-                accelerator=cfg.trainer.accelerator,
-                logger=False,
-                callbacks=[prediction_writer],
-                limit_predict_batches=limit_predict_batches,
-                inference_mode=False,  # Allow to enable grad for computing forces
-            )
-            predicter.predict(model, dataloader, return_predictions=False)
-
+        # Implement code to compute mean and uncertainty
+        aggregated_predictions = {}
+        for name in dataloaders.keys():
+            preds_list = [preds[name] for preds in all_predictions]
+            # Concatenate predictions
+            concatenated_preds = [torch.cat([batch_pred for batch_pred in preds_batch], dim=0) for preds_batch in zip(*preds_list)]
+            # Compute mean and std
+            mean_preds = torch.mean(torch.stack(concatenated_preds), dim=0)
+            std_preds = torch.std(torch.stack(concatenated_preds), dim=0)
+            else:
+                for name, dataloader in dataloaders.items():
+                    if dataloader is None:
+                        logging.info(f"Skip split: {name}")
+                        continue
+                    else:
+                        logging.info(f"Predict split: {name}")
+                        prediction_writer = CsvPredictionWriter(trainer.log_dir, name=name)
+                        limit_predict_batches = 2 if cfg.smoketest else 1.0
+                        predicter = L.Trainer(
+                            accelerator=cfg.trainer.accelerator,
+                            logger=False,
+                            callbacks=[prediction_writer],
+                            limit_predict_batches=limit_predict_batches,
+                            inference_mode=False,
+                        )
+                        predicter.predict(model, dataloader, return_predictions=False)
 
 def configure_trainer(
     output_root_dir: str = "./output",
