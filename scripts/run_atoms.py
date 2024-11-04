@@ -366,6 +366,12 @@ def configure_trainer(
     device_stats_monitor: bool = False,
     learning_rate_monitor: bool = False,
     smoketest: bool = False,
+    # Add SWA parameters
+    use_swa: bool = False,
+    swa_lrs: float | None = None,
+    swa_epoch_start: float = 0.8,
+    annealing_epochs: int = 10,
+    annealing_strategy: str = "cos",
 ) -> L.Trainer:
     """Trainer.
 
@@ -413,6 +419,16 @@ def configure_trainer(
         callbacks.append(L.pytorch.callbacks.DeviceStatsMonitor())
     if learning_rate_monitor:
         callbacks.append(L.pytorch.callbacks.LearningRateMonitor())
+    # Add SWA callback if enabled
+    if use_swa:
+        from lightning.pytorch.callbacks import StochasticWeightAveraging
+        swa_callback = StochasticWeightAveraging(
+            swa_lrs=swa_lrs,
+            swa_epoch_start=swa_epoch_start,
+            annealing_epochs=annealing_epochs,
+            annealing_strategy=annealing_strategy,
+        )
+        callbacks.append(swa_callback)
     # Trainer settings
     limit_train_batches = 2 if smoketest else 1.0
     limit_val_batches = 2 if smoketest else 1.0
@@ -478,7 +494,7 @@ def run(cli, lit_model_cls, lit_data_cls=LitData):
         # Save configuration in log_dir
         cli.save(cfg, log_dir / "config.yaml")
     # Train
-    if cfg.train:
+    if cfg.train:    
         train(cfg, lit_data_cls, lit_model_cls, trainer)
     # Predict
     if cfg.predict:
