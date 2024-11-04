@@ -463,23 +463,23 @@ def predict(cfg, lit_data_cls, lit_model_cls, trainer):
             # Compute mean and std
             mean_preds = torch.mean(torch.stack(concatenated_preds), dim=0)
             std_preds = torch.std(torch.stack(concatenated_preds), dim=0)
+    else:
+        for name, dataloader in dataloaders.items():
+            if dataloader is None:
+                logging.info(f"Skip split: {name}")
+                continue
             else:
-                for name, dataloader in dataloaders.items():
-                    if dataloader is None:
-                        logging.info(f"Skip split: {name}")
-                        continue
-                    else:
-                        logging.info(f"Predict split: {name}")
-                        prediction_writer = CsvPredictionWriter(trainer.log_dir, name=name)
-                        limit_predict_batches = 2 if cfg.smoketest else 1.0
-                        predicter = L.Trainer(
-                            accelerator=cfg.trainer.accelerator,
-                            logger=False,
-                            callbacks=[prediction_writer],
-                            limit_predict_batches=limit_predict_batches,
-                            inference_mode=False,
-                        )
-                        predicter.predict(model, dataloader, return_predictions=False)
+                logging.info(f"Predict split: {name}")
+                prediction_writer = CsvPredictionWriter(trainer.log_dir, name=name)
+                limit_predict_batches = 2 if cfg.smoketest else 1.0
+                predicter = L.Trainer(
+                    accelerator=cfg.trainer.accelerator,
+                    logger=False,
+                    callbacks=[prediction_writer],
+                    limit_predict_batches=limit_predict_batches,
+                    inference_mode=False,
+                )
+                predicter.predict(model, dataloader, return_predictions=False)
 
 def configure_trainer(
     output_root_dir: str = "./output",
