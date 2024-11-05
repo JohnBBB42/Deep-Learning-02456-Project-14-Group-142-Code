@@ -8,6 +8,7 @@ import atomgnn.models.painn
 import atomgnn.models.loss
 import atomgnn.models.utils
 
+from pathlib import Path
 from run_atoms import configure_cli, run
 
 
