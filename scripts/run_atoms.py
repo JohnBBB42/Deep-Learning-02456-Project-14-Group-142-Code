@@ -622,6 +622,8 @@ def configure_cli(default_job_name, add_trainer_args=True, add_data_args=True):
     cli.add_argument("--swag_max_num_models", type=int, default=20, help="Max number of models to collect.")
     cli.add_argument("--no_cov_mat", type=bool, default=True, help="Do not store covariance matrix in SWAG.")
     cli.add_argument("--num_swag_samples", type=int, default=30, help="Number of samples for SWAG prediction.")
+    # SAM Arguments
+    cli.add_argument("--use_sam", type=bool, default=False, help="Enable SAM.")  # Add this line
     # Trainer
     if add_trainer_args:
         # cli = pl.Trainer.add_argparse_args(cli)  # Add all trainer arguments to cli
@@ -631,6 +633,8 @@ def configure_cli(default_job_name, add_trainer_args=True, add_data_args=True):
         cli.link_arguments("swag_swa_start", "trainer.swag_swa_start", apply_on="parse")
         cli.link_arguments("swag_max_num_models", "trainer.swag_max_num_models", apply_on="parse")
         cli.link_arguments("no_cov_mat", "trainer.no_cov_mat", apply_on="parse")
+        # Link SAM arguments
+        cli.link_arguments("use_sam", "model.use_sam", apply_on="parse")  # Link use_sam
         # Original
         cli.link_arguments("output_root_dir", "trainer.output_root_dir", apply_on="parse")
         cli.link_arguments("name", "trainer.name", apply_on="parse")
