@@ -625,6 +625,8 @@ def configure_cli(default_job_name, add_trainer_args=True, add_data_args=True):
     # SAM Arguments
     cli.add_argument("--use_sam", type=bool, default=False, help="Enable SAM.")  # Add this line
     cli.add_argument("--sam_rho", type=float, default=0.05, help="SAM perturbation parameter.")  # Add this line
+    # ASAM Arguments
+    cli.add_argument("--use_asam", type=bool, default=False, help="Enable ASAM.")
     if add_trainer_args:
         # cli = pl.Trainer.add_argparse_args(cli)  # Add all trainer arguments to cli
         cli.add_lightning_class_args(configure_trainer, "trainer")
