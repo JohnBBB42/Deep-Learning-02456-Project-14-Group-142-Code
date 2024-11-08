@@ -413,6 +413,7 @@ def main():
     cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
     # Link SAM arguments
     cli.link_arguments("use_sam", "model.use_sam", apply_on="parse")
+    cli.link_arguments("use_asam", "model.use_asam", apply_on="parse")
     cli.link_arguments("sam_rho", "model.sam_rho", apply_on="parse")
 
     # Run the script
