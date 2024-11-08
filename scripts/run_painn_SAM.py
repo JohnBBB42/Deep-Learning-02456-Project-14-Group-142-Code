@@ -2,8 +2,6 @@
 
 import lightning as L
 import torch
-# Import SAM from torch_optimizer
-import torch_optimizer
 
 import _atomgnn  # noqa: F401
 import atomgnn.models.painn
@@ -35,6 +33,7 @@ class LitPaiNNModel(L.LightningModule):
         # Optimizer
         init_lr: float = 1e-4,
         use_sam: bool = False,  # Add SAM
+        sam_rho: float = 0.05,
         # Underscores hide these arguments from the CLI
         _output_scale: float = 1.0,
         _output_offset: float = 0.0,
@@ -119,30 +118,61 @@ class LitPaiNNModel(L.LightningModule):
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
         if self.use_sam:
-            # SAM training step
-            def closure():
-                optimizer.zero_grad()
-                preds = self.forward(batch)
-                loss = self.loss_function(preds, batch)
-                self.manual_backward(loss)
-                return loss
-
-            loss = closure()
-            optimizer.step(closure)
-            self.log("train_loss", loss)
+            # First forward-backward pass
+            optimizer.zero_grad()
+            preds = self.forward(batch)
+            loss = self.loss_function(preds, batch)
+            self.manual_backward(loss)
+            # Compute gradient norm
+            grad_norm = self._grad_norm()
+            # Perturb weights
+            epsilon = self.sam_rho / (grad_norm + 1e-12)
+            with torch.no_grad():
+                for p in self.parameters():
+                    if p.grad is None:
+                        continue
+                    p.add_(p.grad, alpha=epsilon)
+            # Second forward-backward pass
+            optimizer.zero_grad()
+            preds_adv = self.forward(batch)
+            loss_adv = self.loss_function(preds_adv, batch)
+            self.manual_backward(loss_adv)
+            # Restore original weights
+            with torch.no_grad():
+                for p in self.parameters():
+                    if p.grad is None:
+                        continue
+                    p.sub_(p.grad, alpha=epsilon)
+            # Update parameters
+            optimizer.step()
+            self.log('train_loss', loss_adv)
             # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
         else:
-            # Compute loss
+            # Regular training step
+            optimizer.zero_grad()
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
-            self.log("train_loss", loss)
+            self.manual_backward(loss)
+            optimizer.step()
+            self.log('train_loss', loss)
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
-            return loss
-
+            
+    def _grad_norm(self):
+        device = next(self.parameters()).device
+        norm = torch.norm(
+            torch.stack([
+                p.grad.detach().norm(2).to(device)
+                for p in self.parameters()
+                if p.grad is not None
+            ]),
+            2
+        )
+        return norm
+        
     def on_before_optimizer_step(self, optimizer):
         # Log the total gradient norm of the model
         # Only every 100 steps to reduce overhead
@@ -220,11 +250,7 @@ class LitPaiNNModel(L.LightningModule):
         return {k: v.detach().cpu() for k, v in preds.items()}
 
     def configure_optimizers(self):
-        if self.use_sam:
-            base_optimizer = torch.optim.Adam
-            optimizer = torch_optimizer.SAM(self.parameters(), base_optimizer, lr=self.init_lr)
-        else:
-            optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
