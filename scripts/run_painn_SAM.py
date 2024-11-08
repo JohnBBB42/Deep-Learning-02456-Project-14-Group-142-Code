@@ -119,29 +119,44 @@ class LitPaiNNModel(L.LightningModule):
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
         if self.use_sam:
-            # SAM-specific training step
+            # First forward-backward pass
             optimizer.zero_grad()
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
-            grad_norm = self._grad_norm()
-            epsilon = self.sam_rho / (grad_norm + 1e-12)
+            # Compute gradient norm
+            grad_norm = torch.norm(
+                torch.stack([
+                    p.grad.detach().norm(2)
+                    for p in self.parameters()
+                    if p.grad is not None
+                ])
+            )
+            # Log grad_norm
+            self.log('grad_norm', grad_norm)
+            # Perturb parameters
             with torch.no_grad():
                 for p in self.parameters():
                     if p.grad is None:
                         continue
-                    p.add_(p.grad, alpha=epsilon)
+                    e_w = p.grad / (grad_norm + 1e-12) * self.sam_rho
+                    p.add_(e_w)
+            # Second forward-backward pass
             optimizer.zero_grad()
             preds_adv = self.forward(batch)
             loss_adv = self.loss_function(preds_adv, batch)
             self.manual_backward(loss_adv)
+            # Restore original parameters
             with torch.no_grad():
                 for p in self.parameters():
                     if p.grad is None:
                         continue
-                    p.sub_(p.grad, alpha=epsilon)
+                    e_w = p.grad / (grad_norm + 1e-12) * self.sam_rho
+                    p.sub_(e_w)
+            # Update parameters
             optimizer.step()
             self.log('train_loss', loss_adv)
+            # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
         else:
