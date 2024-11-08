@@ -118,48 +118,41 @@ class LitPaiNNModel(L.LightningModule):
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
         if self.use_sam:
-            # First forward-backward pass
+            # SAM-specific training step
             optimizer.zero_grad()
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
-            # Compute gradient norm
             grad_norm = self._grad_norm()
-            # Perturb weights
             epsilon = self.sam_rho / (grad_norm + 1e-12)
             with torch.no_grad():
                 for p in self.parameters():
                     if p.grad is None:
                         continue
                     p.add_(p.grad, alpha=epsilon)
-            # Second forward-backward pass
             optimizer.zero_grad()
             preds_adv = self.forward(batch)
             loss_adv = self.loss_function(preds_adv, batch)
             self.manual_backward(loss_adv)
-            # Restore original weights
             with torch.no_grad():
                 for p in self.parameters():
                     if p.grad is None:
                         continue
                     p.sub_(p.grad, alpha=epsilon)
-            # Update parameters
             optimizer.step()
             self.log('train_loss', loss_adv)
-            # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
         else:
             # Regular training step
-            optimizer.zero_grad()
+            # Compute loss
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
-            self.manual_backward(loss)
-            optimizer.step()
-            self.log('train_loss', loss)
+            self.log("train_loss", loss)
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
+            return loss
             
     def _grad_norm(self):
         device = next(self.parameters()).device
