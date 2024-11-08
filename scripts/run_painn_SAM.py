@@ -69,6 +69,7 @@ class LitPaiNNModel(L.LightningModule):
         self.stress = stress
         self.init_lr = init_lr
         self.use_sam = use_sam  # Save use_sam as an instance variable
+        self.sam_rho = sam_rho  # Add this line
         if self.use_sam:
             self.automatic_optimization = False  # Disable automatic optimization when using SAM
         # Initialize model
