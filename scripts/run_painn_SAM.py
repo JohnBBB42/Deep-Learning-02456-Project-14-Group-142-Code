@@ -166,16 +166,6 @@ class LitPaiNNModel(L.LightningModule):
             2
         )
         return norm
-    
-    #def _grad_norm(self):
-        #grad_norms = []
-        #for p in self.parameters():
-        #    if p.grad is not None:
-        #        grad_norms.append(p.grad.detach().view(-1))
-        #grad_norms = torch.cat(grad_norms)
-        #total_norm = torch.norm(grad_norms, p=2)
-        #return total_norm
-
         
     def on_before_optimizer_step(self, optimizer):
         # Log the total gradient norm of the model
