@@ -633,9 +633,6 @@ def configure_cli(default_job_name, add_trainer_args=True, add_data_args=True):
         cli.link_arguments("swag_swa_start", "trainer.swag_swa_start", apply_on="parse")
         cli.link_arguments("swag_max_num_models", "trainer.swag_max_num_models", apply_on="parse")
         cli.link_arguments("no_cov_mat", "trainer.no_cov_mat", apply_on="parse")
-        # Link SAM arguments
-        cli.link_arguments("use_sam", "model.use_sam", apply_on="parse")  # Link use_sam
-        cli.link_arguments("sam_rho", "model.sam_rho", apply_on="parse")  # Link sam_rho
         # Original
         cli.link_arguments("output_root_dir", "trainer.output_root_dir", apply_on="parse")
         cli.link_arguments("name", "trainer.name", apply_on="parse")
