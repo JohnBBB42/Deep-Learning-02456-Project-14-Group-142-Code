@@ -121,9 +121,9 @@ class LitPaiNNModel(L.LightningModule):
         return self.model(batch)
 
     def training_step(self, batch, batch_idx):
+        optimizer = self.optimizers()
         if self.use_sam:
-            # SAM optimization
-            optimizer = self.optimizers()
+            # First forward-backward pass
             optimizer.zero_grad()
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
@@ -136,14 +136,15 @@ class LitPaiNNModel(L.LightningModule):
                     if p.grad is not None
                 ])
             )
-            # Compute epsilon
-            epsilon = self.sam_rho / (grad_norm + 1e-12)
+            # Log grad_norm
+            self.log('grad_norm', grad_norm)
             # Perturb parameters
             with torch.no_grad():
                 for p in self.parameters():
                     if p.grad is None:
                         continue
-                    p.add_(p.grad, alpha=epsilon)
+                    e_w = p.grad / (grad_norm + 1e-12) * self.sam_rho
+                    p.add_(e_w)
             # Second forward-backward pass
             optimizer.zero_grad()
             preds_adv = self.forward(batch)
@@ -154,7 +155,8 @@ class LitPaiNNModel(L.LightningModule):
                 for p in self.parameters():
                     if p.grad is None:
                         continue
-                    p.sub_(p.grad, alpha=epsilon)
+                    e_w = p.grad / (grad_norm + 1e-12) * self.sam_rho
+                    p.sub_(e_w)
             # Update parameters
             optimizer.step()
             self.log('train_loss', loss_adv)
@@ -164,7 +166,6 @@ class LitPaiNNModel(L.LightningModule):
     
         elif self.use_asam:
             # ASAM optimization
-            optimizer = self.optimizers()
             optimizer.zero_grad()
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
