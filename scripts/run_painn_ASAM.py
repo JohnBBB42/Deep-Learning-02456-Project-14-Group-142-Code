@@ -8,60 +8,8 @@ import atomgnn.models.painn
 import atomgnn.models.loss
 import atomgnn.models.utils
 
+from pathlib import Path
 from run_atoms import configure_cli, run
-
-import torch
-from torch.optim import Optimizer
-
-class ASAMOptimizer(Optimizer):
-    def __init__(self, params, base_optimizer, rho=0.05, **kwargs):
-        """ASAM optimizer wrapper for Adaptive Sharpness-Aware Minimization.
-        
-        Args:
-            params: Model parameters.
-            base_optimizer: Base optimizer class, e.g., torch.optim.Adam.
-            rho: Neighborhood size parameter for ASAM.
-        """
-        defaults = dict(rho=rho, **kwargs)
-        super().__init__(params, defaults)
-        self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
-        self.param_groups = self.base_optimizer.param_groups
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        # First step: calculate sharpness-aware gradient
-        assert closure is not None, "ASAM requires a closure to compute gradients."
-        closure = torch.enable_grad()(closure)
-        loss = closure()  # Forward-backward pass
-
-        # Apply adaptive perturbation to parameters
-        for group in self.param_groups:
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                # Calculate adaptive norm (scale-invariant)
-                p_norm = torch.norm(p)
-                adaptive_rho = group["rho"] * p_norm / (torch.norm(p.grad) + 1e-12)
-                e_w = p.grad * adaptive_rho
-                p.add_(e_w)  # Perturb parameters
-
-        # Second forward-backward pass with perturbed weights
-        closure = torch.enable_grad()(closure)
-        loss = closure()
-
-        # Reset parameters to original
-        for group in self.param_groups:
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
-                p.sub_(e_w)
-
-        # Update the parameters with base optimizer
-        self.base_optimizer.step()
-        return loss
-
-    def zero_grad(self):
-        self.base_optimizer.zero_grad()
 
 
 class LitPaiNNModel(L.LightningModule):
@@ -84,6 +32,9 @@ class LitPaiNNModel(L.LightningModule):
         loss_nodewise: bool = False,
         # Optimizer
         init_lr: float = 1e-4,
+        use_sam: bool = False,  # Add SAM
+        use_asam: bool = False, # Add ASAM
+        sam_rho: float = 0.05,
         # Underscores hide these arguments from the CLI
         _output_scale: float = 1.0,
         _output_offset: float = 0.0,
@@ -118,6 +69,13 @@ class LitPaiNNModel(L.LightningModule):
         self.forces = forces
         self.stress = stress
         self.init_lr = init_lr
+        self.use_sam = use_sam  # Save use_sam as an instance variable
+        self.use_asam = use_asam
+        self.sam_rho = sam_rho  # Add this line
+        if self.use_sam and self.use_asam:
+            raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
+        if self.use_sam or self.use_asam:
+            self.automatic_optimization = False  # Disable automatic optimization when using SAM
         # Initialize model
         model: torch.nn.Module = atomgnn.models.painn.PaiNN(
             node_size=node_size,
@@ -163,25 +121,122 @@ class LitPaiNNModel(L.LightningModule):
         return self.model(batch)
 
     def training_step(self, batch, batch_idx):
-      """Training step modified to use ASAM optimizer."""
-      def closure():
-          preds = self.forward(batch)
-          loss = self.loss_function(preds, batch)
-          loss.backward()  # Compute gradients for ASAM
-          return loss
-  
-      # ASAM Optimizer performs two forward-backward passes
-      self.optimizers().step(closure)
-      self.optimizers().zero_grad()
-  
-      # Log the original, unperturbed loss
-      unperturbed_loss = self.loss_function(self.forward(batch), batch)
-      self.log("train_loss", unperturbed_loss)
-  
-      return unperturbed_loss
+        if self.use_sam:
+            # SAM optimization
+            optimizer = self.optimizers()
+            optimizer.zero_grad()
+            preds = self.forward(batch)
+            loss = self.loss_function(preds, batch)
+            self.manual_backward(loss)
+            # Compute gradient norm
+            grad_norm = torch.norm(
+                torch.stack([
+                    p.grad.detach().norm(2)
+                    for p in self.parameters()
+                    if p.grad is not None
+                ])
+            )
+            # Compute epsilon
+            epsilon = self.sam_rho / (grad_norm + 1e-12)
+            # Perturb parameters
+            with torch.no_grad():
+                for p in self.parameters():
+                    if p.grad is None:
+                        continue
+                    p.add_(p.grad, alpha=epsilon)
+            # Second forward-backward pass
+            optimizer.zero_grad()
+            preds_adv = self.forward(batch)
+            loss_adv = self.loss_function(preds_adv, batch)
+            self.manual_backward(loss_adv)
+            # Restore original parameters
+            with torch.no_grad():
+                for p in self.parameters():
+                    if p.grad is None:
+                        continue
+                    p.sub_(p.grad, alpha=epsilon)
+            # Update parameters
+            optimizer.step()
+            self.log('train_loss', loss_adv)
+            # Step the learning rate scheduler
+            lr_scheduler = self.lr_schedulers()
+            lr_scheduler.step()
+    
+        elif self.use_asam:
+            # ASAM optimization
+            optimizer = self.optimizers()
+            optimizer.zero_grad()
+            preds = self.forward(batch)
+            loss = self.loss_function(preds, batch)
+            self.manual_backward(loss)
+            # Compute parameter norms and scaled gradients
+            with torch.no_grad():
+                param_norms = []
+                for p in self.parameters():
+                    if p.grad is None:
+                        param_norms.append(None)
+                        continue
+                    param_norm = torch.norm(p)
+                    param_norms.append(param_norm)
+                # Compute scaled gradients
+                scaled_grads = []
+                for p, param_norm in zip(self.parameters(), param_norms):
+                    if p.grad is None:
+                        continue
+                    scaled_grad = p.grad / (param_norm + 1e-12)
+                    scaled_grads.append(scaled_grad.view(-1))
+                # Compute the overall scaled gradient norm
+                scaled_grad_norm = torch.norm(torch.cat(scaled_grads))
+                # Compute epsilon
+                epsilon = self.sam_rho / (scaled_grad_norm + 1e-12)
+                # Perturb parameters
+                for p, param_norm in zip(self.parameters(), param_norms):
+                    if p.grad is None:
+                        continue
+                    perturbation = epsilon * p.grad / (param_norm + 1e-12)
+                    p.add_(perturbation)
+            # Second forward-backward pass
+            optimizer.zero_grad()
+            preds_adv = self.forward(batch)
+            loss_adv = self.loss_function(preds_adv, batch)
+            self.manual_backward(loss_adv)
+            # Restore original parameters
+            with torch.no_grad():
+                for p, param_norm in zip(self.parameters(), param_norms):
+                    if p.grad is None:
+                        continue
+                    perturbation = epsilon * p.grad / (param_norm + 1e-12)
+                    p.sub_(perturbation)
+            # Update parameters
+            optimizer.step()
+            self.log('train_loss', loss_adv)
+            # Step the learning rate scheduler
+            lr_scheduler = self.lr_schedulers()
+            lr_scheduler.step()
 
-
-
+        else:
+            # Regular training step
+            # Compute loss
+            preds = self.forward(batch)
+            loss = self.loss_function(preds, batch)
+            self.log("train_loss", loss)
+            # Update learning rate
+            lr_scheduler = self.lr_schedulers()
+            lr_scheduler.step()
+            return loss
+            
+    def _grad_norm(self):
+        device = next(self.parameters()).device
+        norm = torch.norm(
+            torch.stack([
+                p.grad.detach().norm(2).to(device)
+                for p in self.parameters()
+                if p.grad is not None
+            ]),
+            2
+        )
+        return norm
+        
     def on_before_optimizer_step(self, optimizer):
         # Log the total gradient norm of the model
         # Only every 100 steps to reduce overhead
@@ -259,26 +314,115 @@ class LitPaiNNModel(L.LightningModule):
         return {k: v.detach().cpu() for k, v in preds.items()}
 
     def configure_optimizers(self):
-      base_optimizer = torch.optim.Adam
-      optimizer = ASAMOptimizer(
-          self.parameters(),
-          base_optimizer=base_optimizer,
-          lr=self.init_lr,
-          rho=0.05  # ASAM-specific neighborhood parameter
-      )
-      lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
-      return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
+        lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
+        return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
+class LitSWAGPaiNNModel(LitPaiNNModel):
+    """SWAG model extending LitPaiNNModel."""
 
+    def __init__(self, swa_start=0.8, max_num_models=20, no_cov_mat=True, **kwargs):
+        super().__init__(**kwargs)
+        self.swa_start = swa_start
+        self.max_num_models = max_num_models
+        self.no_cov_mat = no_cov_mat
+        self.num_parameters = sum(p.numel() for p in self.parameters())
+        self.register_buffer('mean', torch.zeros(self.num_parameters))
+        self.register_buffer('sq_mean', torch.zeros(self.num_parameters))
+        if not self.no_cov_mat:
+            self.register_buffer('cov_mat_sqrt', torch.zeros((self.max_num_models, self.num_parameters)))
+        self.num_models_collected = 0
+
+    def training_step(self, batch, batch_idx):
+        # Call the original training_step from LitPaiNNModel
+        loss = super().training_step(batch, batch_idx)
+        current_epoch = self.current_epoch
+        max_epochs = self.trainer.max_epochs
+        if current_epoch >= self.swa_start * max_epochs:
+            self.collect_model()
+        return loss
+
+    def collect_model(self):
+        param_vector = torch.nn.utils.parameters_to_vector(self.parameters())
+        if self.num_models_collected == 0:
+            self.mean.data.copy_(param_vector)
+            self.sq_mean.data.copy_(param_vector ** 2)
+        else:
+            delta = param_vector - self.mean.data
+            self.mean.data += delta / (self.num_models_collected + 1)
+            delta2 = param_vector ** 2 - self.sq_mean.data
+            self.sq_mean.data += delta2 / (self.num_models_collected + 1)
+        if not self.no_cov_mat and self.num_models_collected < self.max_num_models:
+            idx = self.num_models_collected % self.max_num_models
+            self.cov_mat_sqrt[idx].data.copy_(param_vector - self.mean.data)
+        self.num_models_collected += 1
+
+    def sample(self, scale=1.0, cov=False):
+        mean = self.mean
+        sq_mean = self.sq_mean
+        var = sq_mean - mean ** 2
+        std = torch.sqrt(var + 1e-30)
+        z = torch.randn(self.num_parameters, device=mean.device)
+        if cov and not self.no_cov_mat:
+            cov_mat_sqrt = self.cov_mat_sqrt[:min(self.num_models_collected, self.max_num_models)]
+            z_cov = torch.randn(cov_mat_sqrt.size(0), device=mean.device)
+            sample = mean + scale * (z * std + cov_mat_sqrt.t().matmul(z_cov) / (self.num_models_collected - 1) ** 0.5)
+        else:
+            sample = mean + scale * z * std
+        torch.nn.utils.vector_to_parameters(sample, self.parameters())
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=None):
+        self.sample(scale=1.0, cov=not self.no_cov_mat)
+        preds = super().predict_step(batch, batch_idx, dataloader_idx)
+        return preds
+
+    def on_save_checkpoint(self, checkpoint):
+        checkpoint['mean'] = self.mean
+        checkpoint['sq_mean'] = self.sq_mean
+        checkpoint['num_models_collected'] = self.num_models_collected
+        if not self.no_cov_mat:
+            checkpoint['cov_mat_sqrt'] = self.cov_mat_sqrt
+
+    def on_load_checkpoint(self, checkpoint):
+        self.mean = checkpoint['mean']
+        self.sq_mean = checkpoint['sq_mean']
+        self.num_models_collected = checkpoint['num_models_collected']
+        if not self.no_cov_mat:
+            self.cov_mat_sqrt = checkpoint['cov_mat_sqrt']
+
+    def on_train_end(self):
+        # Save SWAG buffers
+        swag_state = {
+            'mean': self.mean,
+            'sq_mean': self.sq_mean,
+            'num_models_collected': self.num_models_collected,
+        }
+        if not self.no_cov_mat:
+            swag_state['cov_mat_sqrt'] = self.cov_mat_sqrt
+        swag_ckpt_path = Path(self.trainer.log_dir) / "swag.ckpt"
+        torch.save(swag_state, swag_ckpt_path)
 
 
 def main():
     cli = configure_cli("run_painn")
+    # Add model-specific arguments
     cli.add_lightning_class_args(LitPaiNNModel, "model")
+    # Link arguments as needed
     cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
     cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
     cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
-    run(cli, LitPaiNNModel)
+    # Link SAM arguments
+    cli.link_arguments("use_sam", "model.use_sam", apply_on="parse")
+    cli.link_arguments("sam_rho", "model.sam_rho", apply_on="parse")
+
+    # Run the script
+    cfg = cli.parse_args()
+    if cfg.use_swag:
+        lit_model_cls = LitSWAGPaiNNModel
+    else:
+        lit_model_cls = LitPaiNNModel
+
+    run(cli, lit_model_cls=lit_model_cls)
 
 
 if __name__ == '__main__':
