@@ -117,7 +117,7 @@ class LitPaiNNModel(L.LightningModule):
         )
         self.model = model
         # Initialize loss function
-        if:
+        if self.heteroscedastic:
             self.loss_function = self.heteroscedastic_loss
         else:  
             self.loss_function = atomgnn.models.loss.MSELoss(
