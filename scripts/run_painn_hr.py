@@ -515,15 +515,8 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
         torch.save(swag_state, swag_ckpt_path)
 
 class CustomGradOutputWrapper(torch.nn.Module):
-    def __init__(
-        self,
-        wrapped_module,
-        forces=False,
-        stress=False,
-        energy_property="energy",
-        forces_property="forces",
-        stress_property="stress",
-    ):
+    def __init__(self, wrapped_module, forces=False, stress=False, energy_property="energy",
+                 forces_property="forces", stress_property="stress"):
         super().__init__()
         self.wrapped_module = wrapped_module
         self.forces = forces
@@ -533,6 +526,8 @@ class CustomGradOutputWrapper(torch.nn.Module):
         self.stress_property = stress_property
 
     def forward(self, batch):
+        if not hasattr(batch, 'pos'):
+            raise AttributeError("The batch does not have a 'pos' attribute.")
         batch.pos.requires_grad_(self.forces or self.stress)
         output = self.wrapped_module(batch)
         energy = output[self.energy_property].sum()
@@ -542,9 +537,10 @@ class CustomGradOutputWrapper(torch.nn.Module):
             )[0]
             output[self.forces_property] = forces
         if self.stress:
-            # Compute stress if needed
+            # Compute stress here if needed
             pass
         return output
+
 
 class HeteroscedasticReadout(torch.nn.Module):
     def __init__(self, input_size, reduction='sum'):
