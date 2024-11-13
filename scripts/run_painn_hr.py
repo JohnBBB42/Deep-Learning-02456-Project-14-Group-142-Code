@@ -172,12 +172,10 @@ class LitPaiNNModel(L.LightningModule):
             # Extract node embeddings from outputs
             node_embeddings = outputs.pop('node_embeddings')
             mean, log_variance = self.readout(node_embeddings, batch.batch)
+            # Apply scaling to mean
             mean = mean.squeeze(-1) * self._output_scale + self._output_offset
-            outputs[self.target_property] = mean.squeeze(-1)
+            outputs[self.target_property] = mean
             outputs['log_variance'] = log_variance.squeeze(-1)
-        else:
-            # The outputs already contain the target property
-            pass
         return outputs
             
     #def forward(self, batch):
@@ -526,20 +524,35 @@ class CustomGradOutputWrapper(torch.nn.Module):
         self.stress_property = stress_property
 
     def forward(self, batch):
-        if not hasattr(batch, 'pos'):
-            raise AttributeError("The batch does not have a 'pos' attribute.")
-        batch.pos.requires_grad_(self.forces or self.stress)
+        requires_grad = self.forces or self.stress
+
+        # Attempt to get positions from 'node_positions' or 'pos'
+        positions = getattr(batch, 'node_positions', None)
+        if positions is None:
+            positions = getattr(batch, 'pos', None)
+
+        if requires_grad and positions is not None:
+            positions.requires_grad_(True)
+        elif requires_grad and positions is None:
+            if self.training:
+                raise ValueError("Training data is missing positions required for forces computation.")
+            else:
+                # Skip forces computation during validation/testing if positions are missing
+                positions = None
+
         output = self.wrapped_module(batch)
         energy = output[self.energy_property].sum()
-        if self.forces:
+
+        if self.forces and positions is not None:
             forces = -torch.autograd.grad(
-                energy, batch.pos, create_graph=self.training, retain_graph=True
+                energy, positions, create_graph=self.training, retain_graph=True
             )[0]
             output[self.forces_property] = forces
         if self.stress:
             # Compute stress here if needed
             pass
         return output
+
 
 
 class HeteroscedasticReadout(torch.nn.Module):
