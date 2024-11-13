@@ -144,6 +144,13 @@ class LitPaiNNModel(L.LightningModule):
             self.hessian_diag = None  # Will be computed later
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
+    def heteroscedastic_loss(self, preds, batch):
+        targets = batch.energy if self.target_property == "energy" else batch.targets
+        error = targets - preds[self.target_property]
+        log_variance = preds["log_variance"]
+        variance = torch.exp(log_variance)
+        loss = 0.5 * ((error ** 2) / variance + log_variance).mean()
+        return loss
 
     def forward(self, batch):
         outputs = self.model(batch)
@@ -168,13 +175,7 @@ class LitPaiNNModel(L.LightningModule):
             optimizer.zero_grad()
             preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
-            if self.heteroscedastic:
-                error = targets - preds[self.target_property]
-                log_variance = preds["log_variance"]
-                variance = torch.exp(log_variance)
-                loss = 0.5 * ((error ** 2) / variance + log_variance).mean()
-            else:
-                loss = self.loss_function(preds, batch)
+            loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
             # Compute gradient norm
             grad_norm = torch.norm(
@@ -216,13 +217,7 @@ class LitPaiNNModel(L.LightningModule):
             optimizer.zero_grad()
             preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
-            if self.heteroscedastic:
-                error = targets - preds[self.target_property]
-                log_variance = preds["log_variance"]
-                variance = torch.exp(log_variance)
-                loss = 0.5 * ((error ** 2) / variance + log_variance).mean()
-            else:
-                loss = self.loss_function(preds, batch)
+            loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
             # Compute parameter norms and scaled gradients
             with torch.no_grad():
@@ -273,13 +268,7 @@ class LitPaiNNModel(L.LightningModule):
             # Compute loss
             preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
-            if self.heteroscedastic:
-                error = targets - preds[self.target_property]
-                log_variance = preds["log_variance"]
-                variance = torch.exp(log_variance)
-                loss = 0.5 * ((error ** 2) / variance + log_variance).mean()
-            else:
-                loss = self.loss_function(preds, batch)
+            loss = self.loss_function(preds, batch)
             self.log("train_loss", loss)
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
