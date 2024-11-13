@@ -118,15 +118,26 @@ class LitPaiNNModel(L.LightningModule):
                 offset=torch.tensor(_output_offset),
                 nodewise=_nodewise_offset,
             )
-        model = atomgnn.models.utils.GradOutputWrapper(
-            model,
-            forces=forces,
-            stress=stress,
-            energy_property=self.target_property,
-            forces_property=self.forces_property,
-            stress_property=self.stress_property,
-        )
+            model = atomgnn.models.utils.GradOutputWrapper(
+                model,
+                forces=forces,
+                stress=stress,
+                energy_property=self.target_property,
+                forces_property=self.forces_property,
+                stress_property=self.stress_property,
+            )
         self.model = model
+        
+    else:
+    # Use the custom GradOutputWrapper only when heteroscedastic is enabled
+    model = CustomGradOutputWrapper(
+        model,
+        forces=forces,
+        stress=stress,
+        energy_property=self.target_property,
+        forces_property=self.forces_property,
+        stress_property=self.stress_property,
+    )
         
         # Initialize loss function
         if self.heteroscedastic:
@@ -154,6 +165,7 @@ class LitPaiNNModel(L.LightningModule):
         variance = torch.exp(log_variance)
         loss = 0.5 * ((error ** 2) / variance + log_variance).mean()
         return loss
+    # Define the custom wrapper
 
     def forward(self, batch):
         outputs = self.model(batch)
@@ -502,6 +514,38 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
             swag_state['cov_mat_sqrt'] = self.cov_mat_sqrt
         swag_ckpt_path = Path(self.trainer.log_dir) / "swag.ckpt"
         torch.save(swag_state, swag_ckpt_path)
+
+class CustomGradOutputWrapper(torch.nn.Module):
+    def __init__(
+        self,
+        wrapped_module,
+        forces=False,
+        stress=False,
+        energy_property="energy",
+        forces_property="forces",
+        stress_property="stress",
+    ):
+        super().__init__()
+        self.wrapped_module = wrapped_module
+        self.forces = forces
+        self.stress = stress
+        self.energy_property = energy_property
+        self.forces_property = forces_property
+        self.stress_property = stress_property
+
+        def forward(self, batch):
+            batch.pos.requires_grad_(self.forces or self.stress)
+            output = self.wrapped_module(batch)
+            energy = output[self.energy_property].sum()
+            if self.forces:
+                forces = -torch.autograd.grad(
+                    energy, batch.pos, create_graph=self.training, retain_graph=True
+                )[0]
+                output[self.forces_property] = forces
+            if self.stress:
+                # Compute stress if needed
+                pass
+            return output
 
 class HeteroscedasticReadout(torch.nn.Module):
     def __init__(self, input_size, reduction='sum'):
