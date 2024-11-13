@@ -172,14 +172,15 @@ class LitPaiNNModel(L.LightningModule):
     def forward(self, batch):
         outputs = self.model(batch)
         if self.heteroscedastic:
-            # Extract node embeddings from outputs
-            node_embeddings = outputs.pop('node_embeddings')
+            # Extract outputs
+            mean_pred, node_embeddings = outputs[self.target_property], outputs['node_embeddings']
             mean, log_variance = self.readout(node_embeddings, batch.batch)
             # Apply scaling to mean
             mean = mean.squeeze(-1) * self._output_scale + self._output_offset
             outputs[self.target_property] = mean
             outputs['log_variance'] = log_variance.squeeze(-1)
         return outputs
+
             
     #def forward(self, batch):
         #return self.model(batch)
