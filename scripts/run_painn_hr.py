@@ -144,7 +144,13 @@ class LitPaiNNModel(L.LightningModule):
             # First forward-backward pass
             optimizer.zero_grad()
             preds = self.forward(batch)
-            loss = self.loss_function(preds, batch)
+            if self.heteroscedastic:
+                error = targets - preds[self.target_property]
+                log_variance = preds["log_variance"]
+                variance = torch.exp(log_variance)
+                loss = 0.5 * ((error ** 2) / variance + log_variance).mean()
+            else:
+                loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
             # Compute gradient norm
             grad_norm = torch.norm(
@@ -181,12 +187,17 @@ class LitPaiNNModel(L.LightningModule):
             # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
-    
         elif self.use_asam:
             # ASAM optimization
             optimizer.zero_grad()
             preds = self.forward(batch)
-            loss = self.loss_function(preds, batch)
+            if self.heteroscedastic:
+                error = targets - preds[self.target_property]
+                log_variance = preds["log_variance"]
+                variance = torch.exp(log_variance)
+                loss = 0.5 * ((error ** 2) / variance + log_variance).mean()
+            else:
+                loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
             # Compute parameter norms and scaled gradients
             with torch.no_grad():
@@ -232,7 +243,6 @@ class LitPaiNNModel(L.LightningModule):
             # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
-
         else:
             # Regular training step
             # Compute loss
@@ -369,6 +379,22 @@ class LitPaiNNModel(L.LightningModule):
         std = torch.sqrt(1.0 / (self.hessian_diag + 1e-6))
         sampled_params = self.posterior_mean + std * torch.randn_like(self.posterior_mean)
         torch.nn.utils.vector_to_parameters(sampled_params, self.parameters())
+        
+    def on_save_checkpoint(self, checkpoint):
+        # Call the superclass method to handle default behavior
+        super().on_save_checkpoint(checkpoint)
+        if self.use_laplace:
+            # Save the Laplace approximation parameters
+            checkpoint['posterior_mean'] = self.posterior_mean
+            checkpoint['hessian_diag'] = self.hessian_diag
+
+    def on_load_checkpoint(self, checkpoint):
+        # Call the superclass method to handle default behavior
+        super().on_load_checkpoint(checkpoint)
+        if self.use_laplace:
+            # Load the Laplace approximation parameters
+            self.posterior_mean = checkpoint['posterior_mean']
+            self.hessian_diag = checkpoint['hessian_diag']
     
     def on_train_end(self):
         if self.use_laplace:
