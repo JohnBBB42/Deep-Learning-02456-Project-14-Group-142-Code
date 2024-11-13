@@ -126,19 +126,18 @@ class LitPaiNNModel(L.LightningModule):
                 forces_property=self.forces_property,
                 stress_property=self.stress_property,
             )
+        else:
+            # Use the custom GradOutputWrapper only when heteroscedastic is enabled
+            model = CustomGradOutputWrapper(
+                model,
+                forces=forces,
+                stress=stress,
+                energy_property=self.target_property,
+                forces_property=self.forces_property,
+                stress_property=self.stress_property,
+            )
+            
         self.model = model
-        
-    else:
-    # Use the custom GradOutputWrapper only when heteroscedastic is enabled
-    model = CustomGradOutputWrapper(
-        model,
-        forces=forces,
-        stress=stress,
-        energy_property=self.target_property,
-        forces_property=self.forces_property,
-        stress_property=self.stress_property,
-    )
-        
         # Initialize loss function
         if self.heteroscedastic:
             self.loss_function = self.heteroscedastic_loss
