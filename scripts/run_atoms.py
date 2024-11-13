@@ -628,8 +628,8 @@ def configure_cli(default_job_name, add_trainer_args=True, add_data_args=True):
     # ASAM Arguments
     cli.add_argument("--use_asam", type=bool, default=False, help="Enable ASAM.")
     # HR arguments
-    cli.add_argument("--heteroscedastic", action="store_true", help="Enable heteroscedastic regression.")
-    cli.add_argument("--use_laplace", action="store_true", help="Apply Laplace approximation for Bayesian posterior.")
+    cli.add_argument("--heteroscedastic", type=bool, default=False, help="Enable heteroscedastic regression.")
+    cli.add_argument("--use_laplace", type=bool, default=False, help="Apply Laplace approximation for Bayesian posterior.")
     if add_trainer_args:
         # cli = pl.Trainer.add_argparse_args(cli)  # Add all trainer arguments to cli
         cli.add_lightning_class_args(configure_trainer, "trainer")
