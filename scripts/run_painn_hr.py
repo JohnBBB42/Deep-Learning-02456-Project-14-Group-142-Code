@@ -104,13 +104,12 @@ class LitPaiNNModel(L.LightningModule):
         output_keys = [self.target_property]
         if self.heteroscedastic:
             output_keys.append('node_embeddings')
-            
-        model = atomgnn.models.utils.DictOutputWrapper(
-            model,
-            #output_keys=[self.target_property],
-            output_keys=output_keys,
-        )
         if not self.heteroscedastic:
+            model = atomgnn.models.utils.DictOutputWrapper(
+                model,
+                #output_keys=[self.target_property],
+                output_keys=output_keys,
+            )
             model = atomgnn.models.utils.ScaleOutputWrapper(
                 model,
                 output_property=self.target_property,
@@ -127,6 +126,10 @@ class LitPaiNNModel(L.LightningModule):
                 stress_property=self.stress_property,
             )
         else:
+            model = CustomDictOutputWrapper(
+                model,
+                output_keys=output_keys,
+            )
             # Use the custom GradOutputWrapper only when heteroscedastic is enabled
             model = CustomGradOutputWrapper(
                 model,
@@ -553,6 +556,27 @@ class CustomGradOutputWrapper(torch.nn.Module):
             pass
         return output
 
+
+class CustomDictOutputWrapper(torch.nn.Module):
+    def __init__(self, module, output_keys):
+        super().__init__()
+        self.module = module
+        self.output_keys = output_keys
+
+    def forward(self, input):
+        output = self.module(input)
+        if isinstance(output, torch.Tensor):
+            if len(self.output_keys) != 1:
+                raise ValueError(f"Expected single output from model, but multiple output_keys provided: {self.output_keys}")
+            return {self.output_keys[0]: output}
+        elif isinstance(output, tuple) or isinstance(output, list):
+            if len(output) != len(self.output_keys):
+                raise ValueError(f"Number of outputs ({len(output)}) does not match number of output_keys ({len(self.output_keys)})")
+            return {k: v for k, v in zip(self.output_keys, output)}
+        elif isinstance(output, dict):
+            return output
+        else:
+            raise TypeError(f"Unsupported output type from model: {type(output)}")
 
 
 class HeteroscedasticReadout(torch.nn.Module):
