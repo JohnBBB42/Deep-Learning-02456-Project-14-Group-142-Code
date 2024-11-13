@@ -105,11 +105,8 @@ class LitPaiNNModel(L.LightningModule):
             
         model = atomgnn.models.utils.DictOutputWrapper(
             model,
+            #output_keys=[self.target_property],
             output_keys=output_keys,
-        
-        model = atomgnn.models.utils.DictOutputWrapper(
-            model,
-            output_keys=[self.target_property],
         )
         model = atomgnn.models.utils.ScaleOutputWrapper(
             model,
