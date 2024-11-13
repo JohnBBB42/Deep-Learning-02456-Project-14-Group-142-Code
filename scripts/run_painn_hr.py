@@ -2,6 +2,8 @@
 
 import lightning as L
 import torch
+import torch.nn.functional as F
+from torch_scatter import scatter
 
 import _atomgnn  # noqa: F401
 import atomgnn.models.painn
@@ -36,6 +38,7 @@ class LitPaiNNModel(L.LightningModule):
         use_asam: bool = False, # Add ASAM
         sam_rho: float = 0.05,
         # Heteroscedastic
+        
         heteroscedastic: bool = False,
         use_laplace: bool = False,
         # Underscores hide these arguments from the CLI
@@ -75,6 +78,7 @@ class LitPaiNNModel(L.LightningModule):
         self.use_sam = use_sam  # Save use_sam as an instance variable
         self.use_asam = use_asam
         self.sam_rho = sam_rho  # Add this line
+        self.readout_reduction = readout_reduction
         self.heteroscedastic = heteroscedastic
         self.use_laplace = use_laplace
         if self.use_sam and self.use_asam:
@@ -88,9 +92,21 @@ class LitPaiNNModel(L.LightningModule):
             num_interaction_blocks=num_interaction_blocks,
             cutoff=cutoff,
             pbc=pbc,
-            readout_reduction=readout_reduction,
-            output_size=2 if self.heteroscedastic else 1,
+            #readout_reduction=readout_reduction,
         )
+        # Define the readout layer
+        if self.heteroscedastic:
+            self.readout = HeteroscedasticReadout(input_size=node_size, reduction=readout_reduction)
+        else:
+            self.readout = torch.nn.Linear(node_size, 1)
+        output_keys = [self.target_property]
+        if self.heteroscedastic:
+            output_keys.append('node_embeddings')
+            
+        model = atomgnn.models.utils.DictOutputWrapper(
+            model,
+            output_keys=output_keys,
+        
         model = atomgnn.models.utils.DictOutputWrapper(
             model,
             output_keys=[self.target_property],
@@ -110,12 +126,9 @@ class LitPaiNNModel(L.LightningModule):
             forces_property=self.forces_property,
             stress_property=self.stress_property,
         )
-        output_keys = [self.target_property, "log_variance"] if self.heteroscedastic else [self.target_property]
-        model = atomgnn.models.utils.DictOutputWrapper(
-            model,
-            output_keys=output_keys,
         )
         self.model = model
+        
         # Initialize loss function
         if self.heteroscedastic:
             self.loss_function = self.heteroscedastic_loss
@@ -135,8 +148,22 @@ class LitPaiNNModel(L.LightningModule):
             self.hessian_diag = None  # Will be computed later
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
+
     def forward(self, batch):
-        return self.model(batch)
+    outputs = self.model(batch)
+    if self.heteroscedastic:
+        # Extract node embeddings from outputs
+        node_embeddings = outputs.pop('node_embeddings')
+        mean, log_variance = self.readout(node_embeddings, batch.batch)
+        outputs[self.target_property] = mean.squeeze(-1)
+        outputs['log_variance'] = log_variance.squeeze(-1)
+    else:
+        # The outputs already contain the target property
+        pass
+    return outputs
+            
+    #def forward(self, batch):
+        #return self.model(batch)
 
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
@@ -144,6 +171,7 @@ class LitPaiNNModel(L.LightningModule):
             # First forward-backward pass
             optimizer.zero_grad()
             preds = self.forward(batch)
+            targets = batch.energy if self.target_property == "energy" else batch.targets
             if self.heteroscedastic:
                 error = targets - preds[self.target_property]
                 log_variance = preds["log_variance"]
@@ -191,6 +219,7 @@ class LitPaiNNModel(L.LightningModule):
             # ASAM optimization
             optimizer.zero_grad()
             preds = self.forward(batch)
+            targets = batch.energy if self.target_property == "energy" else batch.targets
             if self.heteroscedastic:
                 error = targets - preds[self.target_property]
                 log_variance = preds["log_variance"]
@@ -247,6 +276,7 @@ class LitPaiNNModel(L.LightningModule):
             # Regular training step
             # Compute loss
             preds = self.forward(batch)
+            targets = batch.energy if self.target_property == "energy" else batch.targets
             if self.heteroscedastic:
                 error = targets - preds[self.target_property]
                 log_variance = preds["log_variance"]
@@ -254,8 +284,6 @@ class LitPaiNNModel(L.LightningModule):
                 loss = 0.5 * ((error ** 2) / variance + log_variance).mean()
             else:
                 loss = self.loss_function(preds, batch)
-
-            loss = self.loss_function(preds, batch)
             self.log("train_loss", loss)
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
@@ -485,6 +513,21 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
             swag_state['cov_mat_sqrt'] = self.cov_mat_sqrt
         swag_ckpt_path = Path(self.trainer.log_dir) / "swag.ckpt"
         torch.save(swag_state, swag_ckpt_path)
+
+class HeteroscedasticReadout(torch.nn.Module):
+    def __init__(self, input_size, reduction='sum'):
+        super().__init__()
+        self.reduction = reduction
+        self.mean_layer = torch.nn.Linear(input_size, 1)
+        self.log_variance_layer = torch.nn.Linear(input_size, 1)
+
+    def forward(self, x, batch):
+        # x: node embeddings, batch: batch indices for nodes
+        # Aggregate node embeddings to graph-level embeddings
+        graph_embeddings = scatter(x, batch, dim=0, reduce=self.reduction)
+        mean = self.mean_layer(graph_embeddings)
+        log_variance = self.log_variance_layer(graph_embeddings)
+        return mean, log_variance
 
 
 def main():
