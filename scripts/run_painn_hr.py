@@ -532,19 +532,19 @@ class CustomGradOutputWrapper(torch.nn.Module):
         self.forces_property = forces_property
         self.stress_property = stress_property
 
-        def forward(self, batch):
-            batch.pos.requires_grad_(self.forces or self.stress)
-            output = self.wrapped_module(batch)
-            energy = output[self.energy_property].sum()
-            if self.forces:
-                forces = -torch.autograd.grad(
-                    energy, batch.pos, create_graph=self.training, retain_graph=True
-                )[0]
-                output[self.forces_property] = forces
-            if self.stress:
-                # Compute stress if needed
-                pass
-            return output
+    def forward(self, batch):
+        batch.pos.requires_grad_(self.forces or self.stress)
+        output = self.wrapped_module(batch)
+        energy = output[self.energy_property].sum()
+        if self.forces:
+            forces = -torch.autograd.grad(
+                energy, batch.pos, create_graph=self.training, retain_graph=True
+            )[0]
+            output[self.forces_property] = forces
+        if self.stress:
+            # Compute stress if needed
+            pass
+        return output
 
 class HeteroscedasticReadout(torch.nn.Module):
     def __init__(self, input_size, reduction='sum'):
