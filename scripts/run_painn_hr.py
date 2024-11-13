@@ -81,6 +81,8 @@ class LitPaiNNModel(L.LightningModule):
         self.readout_reduction = readout_reduction
         self.heteroscedastic = heteroscedastic
         self.use_laplace = use_laplace
+        self._output_scale = _output_scale
+        self._output_offset = _output_offset
         if self.use_sam and self.use_asam:
             raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
         if self.use_sam or self.use_asam:
@@ -108,13 +110,14 @@ class LitPaiNNModel(L.LightningModule):
             #output_keys=[self.target_property],
             output_keys=output_keys,
         )
-        model = atomgnn.models.utils.ScaleOutputWrapper(
-            model,
-            output_property=self.target_property,
-            scale=torch.tensor(_output_scale),
-            offset=torch.tensor(_output_offset),
-            nodewise=_nodewise_offset,
-        )
+        if not self.heteroscedastic:
+            model = atomgnn.models.utils.ScaleOutputWrapper(
+                model,
+                output_property=self.target_property,
+                scale=torch.tensor(_output_scale),
+                offset=torch.tensor(_output_offset),
+                nodewise=_nodewise_offset,
+            )
         model = atomgnn.models.utils.GradOutputWrapper(
             model,
             forces=forces,
@@ -158,6 +161,7 @@ class LitPaiNNModel(L.LightningModule):
             # Extract node embeddings from outputs
             node_embeddings = outputs.pop('node_embeddings')
             mean, log_variance = self.readout(node_embeddings, batch.batch)
+            mean = mean.squeeze(-1) * self._output_scale + self._output_offset
             outputs[self.target_property] = mean.squeeze(-1)
             outputs['log_variance'] = log_variance.squeeze(-1)
         else:
