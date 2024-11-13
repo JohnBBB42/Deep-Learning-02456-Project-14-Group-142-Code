@@ -45,18 +45,18 @@ def main(args):
     
     # Set up the calculator
     transform = AddEdgesWithinCutoffDistanceTransform(config["data"]["cutoff"])
-    calc = AseCalculator(
-        model,
-        transform,
-        implemented_properties=["energy", "forces"],
-        device=DEVICE,
-    )
     
     # Prepare images for NEB
     images = [reactant.copy() for _ in range(10)] + [product.copy()]
     for image in images:
-        image.calc = calc
-        
+        image.calc = AseCalculator(
+            model,
+            transform,
+            implemented_properties=["energy", "forces"],
+            device=DEVICE,
+        )
+
+    
     # Optimize initial and final images
     BFGS(images[0]).run(fmax=0.05, steps=1000)
     BFGS(images[-1]).run(fmax=0.05, steps=1000)
