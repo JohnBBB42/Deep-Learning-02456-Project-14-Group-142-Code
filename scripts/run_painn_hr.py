@@ -123,7 +123,6 @@ class LitPaiNNModel(L.LightningModule):
             forces_property=self.forces_property,
             stress_property=self.stress_property,
         )
-        )
         self.model = model
         
         # Initialize loss function
