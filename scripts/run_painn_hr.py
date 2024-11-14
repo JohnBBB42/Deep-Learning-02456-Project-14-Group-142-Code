@@ -132,13 +132,13 @@ class LitPaiNNModel(L.LightningModule):
         use_asam: bool = False, # Add ASAM
         sam_rho: float = 0.05,
         # Heteroscedastic
-        
         heteroscedastic: bool = False,
         use_laplace: bool = False,
         # Underscores hide these arguments from the CLI
         _output_scale: float = 1.0,
         _output_offset: float = 0.0,
         _nodewise_offset: bool = True,
+        train_dataloader=None,
         **kwargs,  # Ignore additional arguments
     ):
         """Initialize model.
@@ -177,6 +177,7 @@ class LitPaiNNModel(L.LightningModule):
         self.use_laplace = use_laplace
         self._output_scale = _output_scale
         self._output_offset = _output_offset
+        self.train_dataloader_for_laplace = train_dataloader
         if self.use_sam and self.use_asam:
             raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
         if self.use_sam or self.use_asam:
@@ -192,6 +193,7 @@ class LitPaiNNModel(L.LightningModule):
                 cutoff=cutoff,
                 pbc=pbc,
                 readout_reduction=readout_reduction,
+                train_dataloader=data.train_dataloader(),
             )
         else:
             model: torch.nn.Module = atomgnn.models.painn.PaiNN(
@@ -499,17 +501,13 @@ class LitPaiNNModel(L.LightningModule):
         device = next(self.parameters()).device  # Get the device of the model
         hessian_diag = torch.zeros(self.num_parameters, device=device)
         
-        # Access the train DataLoader from the DataModule
-        if self.trainer.datamodule is not None:
-            train_dataloader = self.trainer.datamodule.train_dataloader()
-        else:
-            raise ValueError("No DataModule is defined. Cannot access the training DataLoader.")
+        train_dataloader = self.train_dataloader_for_laplace
+        if train_dataloader is None:
+            raise ValueError("Train DataLoader is not available. Ensure it is passed to the model.")
         
         for batch in train_dataloader:
             batch = batch.to(device)  # Move batch to the device
-            # Ensure batch has node_features
-            if not hasattr(batch, 'node_features') or batch.node_features is None:
-                raise ValueError("Batch is missing 'node_features'. Ensure the DataLoader provides 'node_features'.")
+            # Remove the check for node_features since we're ensuring the correct DataLoader
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             loss.backward(create_graph=True)
@@ -550,10 +548,9 @@ class LitPaiNNModel(L.LightningModule):
             self.posterior_mean = checkpoint['posterior_mean']
             self.hessian_diag = checkpoint['hessian_diag']
     
-    def on_train_end(self):
+    def on_fit_end(self):
         if self.use_laplace:
             self.laplace_approximation()
-
 
 
 class LitSWAGPaiNNModel(LitPaiNNModel):
