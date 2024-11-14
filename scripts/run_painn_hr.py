@@ -494,24 +494,36 @@ class LitPaiNNModel(L.LightningModule):
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
       
     def laplace_approximation(self):
-      """Apply Laplace approximation for posterior estimation."""
-      self.model.eval()
-      device = next(self.parameters()).device  # Get the device of the model
-      hessian_diag = torch.zeros(self.num_parameters, device=device)
-      for batch in self.trainer.train_dataloader:
-          batch = batch.to(device)  # Move batch to the device
-          preds = self.forward(batch)
-          loss = self.loss_function(preds, batch)
-          loss.backward(create_graph=True)
-          with torch.no_grad():
-              idx = 0
-              for p in self.parameters():
-                  if p.grad is not None:
-                      numel = p.numel()
-                      hessian_diag[idx:idx+numel] = p.grad.flatten() ** 2
-                      idx += numel
-      self.hessian_diag_inv = 1.0 / (hessian_diag + 1e-6)
-      self.posterior_mean = torch.nn.utils.parameters_to_vector(self.parameters()).detach()
+        """Apply Laplace approximation for posterior estimation."""
+        self.model.eval()
+        device = next(self.parameters()).device  # Get the device of the model
+        hessian_diag = torch.zeros(self.num_parameters, device=device)
+        
+        # Access the train DataLoader from the DataModule
+        if self.trainer.datamodule is not None:
+            train_dataloader = self.trainer.datamodule.train_dataloader()
+        else:
+            raise ValueError("No DataModule is defined. Cannot access the training DataLoader.")
+        
+        for batch in train_dataloader:
+            batch = batch.to(device)  # Move batch to the device
+            # Ensure batch has node_features
+            if not hasattr(batch, 'node_features') or batch.node_features is None:
+                raise ValueError("Batch is missing 'node_features'. Ensure the DataLoader provides 'node_features'.")
+            preds = self.forward(batch)
+            loss = self.loss_function(preds, batch)
+            loss.backward(create_graph=True)
+            with torch.no_grad():
+                idx = 0
+                for p in self.parameters():
+                    if p.grad is not None:
+                        numel = p.numel()
+                        hessian_diag[idx:idx+numel] = p.grad.detach().flatten() ** 2
+                        idx += numel
+                self.zero_grad()  # Reset gradients before the next iteration
+        self.hessian_diag = hessian_diag  # Store hessian_diag for later use
+        self.posterior_mean = torch.nn.utils.parameters_to_vector(self.parameters()).detach()
+
 
     
     def sample_from_posterior(self):
