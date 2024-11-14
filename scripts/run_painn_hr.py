@@ -193,7 +193,6 @@ class LitPaiNNModel(L.LightningModule):
                 cutoff=cutoff,
                 pbc=pbc,
                 readout_reduction=readout_reduction,
-                train_dataloader=data.train_dataloader(),
             )
         else:
             model: torch.nn.Module = atomgnn.models.painn.PaiNN(
