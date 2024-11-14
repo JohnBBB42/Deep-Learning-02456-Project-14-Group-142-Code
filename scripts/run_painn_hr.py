@@ -14,7 +14,9 @@ from pathlib import Path
 from run_atoms import configure_cli, run
 
 # Import necessary components from the PaiNN model
-from atomgnn.models.utils import BesselExpansion, compute_edge_vectors_and_norms, cosine_cutoff, reduce_splits
+from atomgnn.data.data import Batch
+from atomgnn.models.utils import (BesselExpansion, compute_edge_vectors_and_norms,
+                                  cosine_cutoff, reduce_splits, sum_index)
 from atomgnn.models.painn import PaiNNInteractionBlock
 
 class PaiNNWithEmbeddings(torch.nn.Module):
