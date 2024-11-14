@@ -138,7 +138,6 @@ class LitPaiNNModel(L.LightningModule):
         _output_scale: float = 1.0,
         _output_offset: float = 0.0,
         _nodewise_offset: bool = True,
-        train_dataloader=None,
         **kwargs,  # Ignore additional arguments
     ):
         """Initialize model.
@@ -177,7 +176,6 @@ class LitPaiNNModel(L.LightningModule):
         self.use_laplace = use_laplace
         self._output_scale = _output_scale
         self._output_offset = _output_offset
-        self.train_dataloader_for_laplace = train_dataloader
         if self.use_sam and self.use_asam:
             raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
         if self.use_sam or self.use_asam:
@@ -500,13 +498,14 @@ class LitPaiNNModel(L.LightningModule):
         device = next(self.parameters()).device  # Get the device of the model
         hessian_diag = torch.zeros(self.num_parameters, device=device)
         
-        train_dataloader = self.train_dataloader_for_laplace
-        if train_dataloader is None:
-            raise ValueError("Train DataLoader is not available. Ensure it is passed to the model.")
+        # Access train_dataloader from self.trainer.datamodule
+        if self.trainer is not None and hasattr(self.trainer, 'datamodule'):
+            train_dataloader = self.trainer.datamodule.train_dataloader()
+        else:
+            raise ValueError("Trainer or DataModule is not available. Cannot perform Laplace approximation.")
         
         for batch in train_dataloader:
             batch = batch.to(device)  # Move batch to the device
-            # Remove the check for node_features since we're ensuring the correct DataLoader
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             loss.backward(create_graph=True)
