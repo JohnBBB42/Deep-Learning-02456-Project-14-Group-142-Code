@@ -274,7 +274,7 @@ class LitPaiNNModel(L.LightningModule):
             if self.forces and positions is not None:
                 positions.requires_grad_(True)
             output_scalar, node_embeddings = self.model(batch)
-            mean, log_variance = self.readout(node_embeddings, batch.batch)
+            mean, log_variance = self.readout(node_embeddings, batch.node_data_index)
             # Apply scaling to mean
             mean = mean.squeeze(-1) * self._output_scale + self._output_offset
             outputs = {
