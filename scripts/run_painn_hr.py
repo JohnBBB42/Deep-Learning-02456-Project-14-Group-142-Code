@@ -13,6 +13,98 @@ import atomgnn.models.utils
 from pathlib import Path
 from run_atoms import configure_cli, run
 
+# Import necessary components from the PaiNN model
+from atomgnn.models.utils import BesselExpansion, compute_edge_vectors_and_norms, cosine_cutoff, reduce_splits
+from atomgnn.models.painn import PaiNNInteractionBlock
+
+class PaiNNWithEmbeddings(torch.nn.Module):
+    """PaiNN model that returns node embeddings."""
+
+    def __init__(
+        self,
+        node_size: int = 64,
+        edge_size: int = 20,
+        num_interaction_blocks: int = 3,
+        cutoff: float = 5.0,
+        pbc: bool = False,
+        # Readout
+        use_readout: bool = True,
+        num_readout_layers: int = 2,
+        readout_size: int = 1,
+        readout_reduction: str | None = "sum",
+        **kwargs,
+    ) -> None:
+        super().__init__()
+        self.node_size = node_size
+        self.edge_size = edge_size
+        self.num_interaction_blocks = num_interaction_blocks
+        self.cutoff = cutoff
+        self.pbc = pbc
+        self.use_readout = use_readout
+        self.num_readout_layers = num_readout_layers
+        self.readout_size = readout_size
+        self.readout_reduction = readout_reduction
+        # Setup node embedding
+        num_embeddings = 119  # atomic numbers + 1
+        self.node_embedding = torch.nn.Embedding(num_embeddings, node_size)
+        # Setup edge expansion
+        self.edge_expansion = BesselExpansion(edge_size, cutoff)
+        # Setup interaction blocks
+        self.interaction_blocks = torch.nn.ModuleList(
+            PaiNNInteractionBlock(node_size, edge_size, cutoff)
+            for _ in range(num_interaction_blocks))
+        # Setup readout network
+        if self.use_readout:
+            self.readout_net = torch.nn.Sequential()
+            for _ in range(num_readout_layers - 1):
+                self.readout_net.append(torch.nn.Linear(node_size, node_size))
+                self.readout_net.append(torch.nn.SiLU())
+            self.readout_net.append(torch.nn.Linear(node_size, readout_size))
+
+    def forward(self, input: Batch) -> torch.Tensor:
+        # Get scalar node states by embedding node features
+        node_states_scalar = self.node_embedding(input.node_features.squeeze())
+        # Init vector node states to zero as there is no initial directional information
+        node_states_vector = torch.zeros(
+            (node_states_scalar.shape[0], 3, self.node_size),
+            dtype=node_states_scalar.dtype,
+            device=node_states_scalar.device
+        )
+        # Compute edge vectors and distances
+        edge_vectors, edge_norms = compute_edge_vectors_and_norms(
+            input.node_positions, input.edge_index,
+            input.edge_shift if self.pbc else None,
+            input.cell[input.edge_data_index] if self.pbc else None,
+        )
+        # Normalize edge vectors (add small number to avoid division by zero)
+        edge_vectors = edge_vectors / (edge_norms + 1e-10)
+        # Get edge states by expansion of the edge distances
+        edge_states = self.edge_expansion(edge_norms)
+        # Apply interaction blocks
+        for interaction_block in self.interaction_blocks:
+            node_states_scalar, node_states_vector = interaction_block(
+                node_states_scalar, node_states_vector,
+                edge_states, edge_vectors, edge_norms, input.edge_index)
+        # Apply node-level readout
+        if self.use_readout:
+            node_states_scalar_readout = self.readout_net(node_states_scalar)
+        else:
+            node_states_scalar_readout = node_states_scalar
+        # Prepare output
+        if self.readout_reduction:
+            # Graph-level output
+            graph_states_scalar = reduce_splits(
+                node_states_scalar_readout, input.num_nodes, reduction=self.readout_reduction
+            )
+            output_scalar = graph_states_scalar
+        else:
+            # Node-level output
+            output_scalar = node_states_scalar_readout
+        # Return both the output and node embeddings
+        return output_scalar, node_states_scalar  # node_states_scalar are the node embeddings
+
+
+
 
 class LitPaiNNModel(L.LightningModule):
     """PaiNN model."""
@@ -88,14 +180,26 @@ class LitPaiNNModel(L.LightningModule):
         if self.use_sam or self.use_asam:
             self.automatic_optimization = False  # Disable automatic optimization when using SAM
         # Initialize model
-        model: torch.nn.Module = atomgnn.models.painn.PaiNN(
-            node_size=node_size,
-            edge_size=edge_size,
-            num_interaction_blocks=num_interaction_blocks,
-            cutoff=cutoff,
-            pbc=pbc,
-            #readout_reduction=readout_reduction,
-        )
+
+        if self.heteroscedastic:
+            # Use the custom PaiNN model that returns embeddings
+            model: torch.nn.Module = PaiNNWithEmbeddings(
+                node_size=node_size,
+                edge_size=edge_size,
+                num_interaction_blocks=num_interaction_blocks,
+                cutoff=cutoff,
+                pbc=pbc,
+                readout_reduction=readout_reduction,
+            )
+        else:
+            model: torch.nn.Module = atomgnn.models.painn.PaiNN(
+                node_size=node_size,
+                edge_size=edge_size,
+                num_interaction_blocks=num_interaction_blocks,
+                cutoff=cutoff,
+                pbc=pbc,
+                readout_reduction=readout_reduction,
+            )
         # Define the readout layer
         if self.heteroscedastic:
             self.readout = HeteroscedasticReadout(input_size=node_size, reduction=readout_reduction)
@@ -125,21 +229,6 @@ class LitPaiNNModel(L.LightningModule):
                 forces_property=self.forces_property,
                 stress_property=self.stress_property,
             )
-        else:
-            model = CustomDictOutputWrapper(
-                model,
-                output_keys=output_keys,
-            )
-            # Use the custom GradOutputWrapper only when heteroscedastic is enabled
-            model = CustomGradOutputWrapper(
-                model,
-                forces=forces,
-                stress=stress,
-                energy_property=self.target_property,
-                forces_property=self.forces_property,
-                stress_property=self.stress_property,
-            )
-            
         self.model = model
         # Initialize loss function
         if self.heteroscedastic:
@@ -165,23 +254,41 @@ class LitPaiNNModel(L.LightningModule):
         error = targets - preds[self.target_property]
         log_variance = preds["log_variance"]
         variance = torch.exp(log_variance)
-        loss = 0.5 * ((error ** 2) / variance + log_variance).mean()
+        loss_energy = 0.5 * ((error ** 2) / variance + log_variance).mean()
+        loss = loss_energy
+        if self.forces:
+            forces_error = batch.forces - preds[self.forces_property]
+            loss_forces = self.hparams.loss_forces_weight * torch.nn.functional.mse_loss(
+                preds[self.forces_property], batch.forces)
+            loss += loss_forces
         return loss
-    # Define the custom wrapper
+
 
     def forward(self, batch):
-        outputs = self.model(batch)
         if self.heteroscedastic:
-            # Extract outputs
-            mean_pred, node_embeddings = outputs[self.target_property], outputs['node_embeddings']
+            positions = getattr(batch, 'node_positions', None)
+            if positions is None:
+                positions = getattr(batch, 'pos', None)
+            if self.forces and positions is not None:
+                positions.requires_grad_(True)
+            output_scalar, node_embeddings = self.model(batch)
             mean, log_variance = self.readout(node_embeddings, batch.batch)
             # Apply scaling to mean
             mean = mean.squeeze(-1) * self._output_scale + self._output_offset
-            outputs[self.target_property] = mean
-            outputs['log_variance'] = log_variance.squeeze(-1)
+            outputs = {
+                self.target_property: mean,
+                'log_variance': log_variance.squeeze(-1)
+            }
+            if self.forces and positions is not None:
+                energy = mean.sum()
+                forces = -torch.autograd.grad(
+                    energy, positions, create_graph=self.training, retain_graph=True
+                )[0]
+                outputs[self.forces_property] = forces
+        else:
+            outputs = self.model(batch)
         return outputs
 
-            
     #def forward(self, batch):
         #return self.model(batch)
 
@@ -515,70 +622,6 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
             swag_state['cov_mat_sqrt'] = self.cov_mat_sqrt
         swag_ckpt_path = Path(self.trainer.log_dir) / "swag.ckpt"
         torch.save(swag_state, swag_ckpt_path)
-
-class CustomGradOutputWrapper(torch.nn.Module):
-    def __init__(self, wrapped_module, forces=False, stress=False, energy_property="energy",
-                 forces_property="forces", stress_property="stress"):
-        super().__init__()
-        self.wrapped_module = wrapped_module
-        self.forces = forces
-        self.stress = stress
-        self.energy_property = energy_property
-        self.forces_property = forces_property
-        self.stress_property = stress_property
-
-    def forward(self, batch):
-        requires_grad = self.forces or self.stress
-
-        # Attempt to get positions from 'node_positions' or 'pos'
-        positions = getattr(batch, 'node_positions', None)
-        if positions is None:
-            positions = getattr(batch, 'pos', None)
-
-        if requires_grad and positions is not None:
-            positions.requires_grad_(True)
-        elif requires_grad and positions is None:
-            if self.training:
-                raise ValueError("Training data is missing positions required for forces computation.")
-            else:
-                # Skip forces computation during validation/testing if positions are missing
-                positions = None
-
-        output = self.wrapped_module(batch)
-        energy = output[self.energy_property].sum()
-
-        if self.forces and positions is not None:
-            forces = -torch.autograd.grad(
-                energy, positions, create_graph=self.training, retain_graph=True
-            )[0]
-            output[self.forces_property] = forces
-        if self.stress:
-            # Compute stress here if needed
-            pass
-        return output
-
-
-class CustomDictOutputWrapper(torch.nn.Module):
-    def __init__(self, module, output_keys):
-        super().__init__()
-        self.module = module
-        self.output_keys = output_keys
-
-    def forward(self, input):
-        output = self.module(input)
-        if isinstance(output, torch.Tensor):
-            if len(self.output_keys) != 1:
-                raise ValueError(f"Expected single output from model, but multiple output_keys provided: {self.output_keys}")
-            return {self.output_keys[0]: output}
-        elif isinstance(output, tuple) or isinstance(output, list):
-            if len(output) != len(self.output_keys):
-                raise ValueError(f"Number of outputs ({len(output)}) does not match number of output_keys ({len(self.output_keys)})")
-            return {k: v for k, v in zip(self.output_keys, output)}
-        elif isinstance(output, dict):
-            return output
-        else:
-            raise TypeError(f"Unsupported output type from model: {type(output)}")
-
 
 class HeteroscedasticReadout(torch.nn.Module):
     def __init__(self, input_size, reduction='sum'):
