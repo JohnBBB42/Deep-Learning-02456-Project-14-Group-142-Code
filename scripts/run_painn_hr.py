@@ -20,7 +20,7 @@ from atomgnn.models.utils import (BesselExpansion, compute_edge_vectors_and_norm
 from atomgnn.models.painn import PaiNNInteractionBlock
 
 class PaiNNWithEmbeddings(torch.nn.Module):
-    """PaiNN model that returns node embeddings."""
+    """PaiNN model that returns node embeddings and optionally computes the Laplacian."""
 
     def __init__(
         self,
@@ -29,11 +29,11 @@ class PaiNNWithEmbeddings(torch.nn.Module):
         num_interaction_blocks: int = 3,
         cutoff: float = 5.0,
         pbc: bool = False,
-        # Readout
         use_readout: bool = True,
         num_readout_layers: int = 2,
         readout_size: int = 1,
         readout_reduction: str | None = "sum",
+        use_laplace: bool = False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -46,6 +46,8 @@ class PaiNNWithEmbeddings(torch.nn.Module):
         self.num_readout_layers = num_readout_layers
         self.readout_size = readout_size
         self.readout_reduction = readout_reduction
+        self.use_laplace = use_laplace
+
         # Setup node embedding
         num_embeddings = 119  # atomic numbers + 1
         self.node_embedding = torch.nn.Embedding(num_embeddings, node_size)
@@ -54,7 +56,8 @@ class PaiNNWithEmbeddings(torch.nn.Module):
         # Setup interaction blocks
         self.interaction_blocks = torch.nn.ModuleList(
             PaiNNInteractionBlock(node_size, edge_size, cutoff)
-            for _ in range(num_interaction_blocks))
+            for _ in range(num_interaction_blocks)
+        )
         # Setup readout network
         if self.use_readout:
             self.readout_net = torch.nn.Sequential()
@@ -64,66 +67,59 @@ class PaiNNWithEmbeddings(torch.nn.Module):
             self.readout_net.append(torch.nn.Linear(node_size, readout_size))
 
     def forward(self, input: Batch) -> torch.Tensor:
-        # Check for the presence of node features in the input batch
         if not hasattr(input, 'node_features') or input.node_features is None:
             raise AttributeError("Input batch does not have 'node_features' or it is None.")
     
         node_states_scalar = self.node_embedding(input.node_features.squeeze())
-        # Init vector node states to zero as there is no initial directional information
         node_states_vector = torch.zeros(
             (node_states_scalar.shape[0], 3, self.node_size),
             dtype=node_states_scalar.dtype,
             device=node_states_scalar.device
         )
-        # Compute edge vectors and distances
+
         edge_vectors, edge_norms = compute_edge_vectors_and_norms(
             input.node_positions, input.edge_index,
             input.edge_shift if self.pbc else None,
             input.cell[input.edge_data_index] if self.pbc else None,
         )
-        # Normalize edge vectors (add small number to avoid division by zero)
         edge_vectors = edge_vectors / (edge_norms + 1e-10)
-        # Get edge states by expansion of the edge distances
         edge_states = self.edge_expansion(edge_norms)
-        # Apply interaction blocks
+
         for interaction_block in self.interaction_blocks:
             node_states_scalar, node_states_vector = interaction_block(
                 node_states_scalar, node_states_vector,
-                edge_states, edge_vectors, edge_norms, input.edge_index)
-        # Apply node-level readout
+                edge_states, edge_vectors, edge_norms, input.edge_index
+            )
+
         if self.use_readout:
             node_states_scalar_readout = self.readout_net(node_states_scalar)
         else:
             node_states_scalar_readout = node_states_scalar
-        # Prepare output
+
         if self.readout_reduction:
-            # Graph-level output
-            graph_states_scalar = reduce_splits(
+            output_scalar = reduce_splits(
                 node_states_scalar_readout, input.num_nodes, reduction=self.readout_reduction
             )
-            output_scalar = graph_states_scalar
         else:
-            # Node-level output
             output_scalar = node_states_scalar_readout
-        # Calculate Laplacian of node states (as an example, for scalar states)
-        laplacian_scalar = self._compute_laplacian(node_states_scalar, input.edge_index)
-        # Return both the output and node embeddings
-        return output_scalar, node_states_scalar, laplacian_scalar  # node_states_scalar are the node embeddings
-    
+
+        laplacian_scalar = None
+        if self.use_laplace:
+            laplacian_scalar = self._compute_laplacian(node_states_scalar, input.edge_index)
+
+        return output_scalar, node_states_scalar, laplacian_scalar
+
     def _compute_laplacian(self, node_states, edge_index):
-        """Compute the graph Laplacian for node states."""
-        # Transpose if edge_index has shape (num_edges, 2)
         if edge_index.shape[0] != 2 and edge_index.shape[1] == 2:
             edge_index = edge_index.t()
-    
-        # Ensure edge_index is now of shape (2, num_edges)
         if edge_index.ndim != 2 or edge_index.shape[0] != 2:
             raise ValueError(f"Expected edge_index to have shape (2, num_edges), but got {edge_index.shape}")
-        
+
         row, col = edge_index[0], edge_index[1]
         degree = scatter(torch.ones_like(row, dtype=node_states.dtype), row, dim=0, reduce="sum")
         laplacian = degree.unsqueeze(1) * node_states - scatter(node_states[col], row, dim=0, reduce="sum")
         return laplacian
+
 
 
 
@@ -210,6 +206,7 @@ class LitPaiNNModel(L.LightningModule):
                 cutoff=cutoff,
                 pbc=pbc,
                 readout_reduction=readout_reduction,
+                use_laplace=use_laplace,
             )
         else:
             model: torch.nn.Module = atomgnn.models.painn.PaiNN(
@@ -292,13 +289,15 @@ class LitPaiNNModel(L.LightningModule):
             if self.forces and positions is not None:
                 positions.requires_grad_(True)
     
-            # Unpack outputs correctly based on your model's return signature
+            # Unpack outputs from the model, which may include the Laplacian
             outputs = self.model(batch)
             if len(outputs) == 3:
                 output_scalar, node_states_scalar, laplacian_scalar = outputs
             else:
                 output_scalar, node_states_scalar = outputs
+                laplacian_scalar = None  # No Laplacian computed if not needed
     
+            # Compute mean and log variance
             mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
     
             # Apply scaling to mean
@@ -308,8 +307,8 @@ class LitPaiNNModel(L.LightningModule):
                 'log_variance': log_variance.squeeze(-1)
             }
     
-            # Include Laplacian if computed
-            if len(outputs) == 3:
+            # Include Laplacian in outputs if it was computed
+            if self.use_laplace and laplacian_scalar is not None:
                 outputs_dict['laplacian'] = laplacian_scalar
     
             # Compute forces if required
@@ -320,9 +319,11 @@ class LitPaiNNModel(L.LightningModule):
                 )[0]
                 outputs_dict[self.forces_property] = forces
         else:
+            # Handle non-heteroscedastic model case
             outputs_dict = self.model(batch)
-  
+    
         return outputs_dict
+
 
 
     #def forward(self, batch):
@@ -568,15 +569,15 @@ class LitPaiNNModel(L.LightningModule):
 
     def laplace_approximation(self):
         """Apply Laplace approximation for posterior estimation."""
-        self.model.eval()
+        self.model.eval()  # Ensure the model is in evaluation mode
         device = next(self.parameters()).device
         hessian_diag = torch.zeros(self.num_parameters, device=device)
-
+    
         if self.trainer is not None and hasattr(self.trainer.datamodule, 'train_dataloader'):
             train_dataloader = self.trainer.datamodule.train_dataloader()
         else:
             raise ValueError("Trainer or DataModule is not available. Cannot perform Laplace approximation.")
-
+    
         for batch_idx, batch in enumerate(train_dataloader):
             batch = batch.to(device)
             preds = self.forward(batch)
@@ -590,7 +591,7 @@ class LitPaiNNModel(L.LightningModule):
                         hessian_diag[idx:idx + numel] = p.grad.detach().flatten() ** 2
                         idx += numel
                 self.zero_grad()
-
+    
         self.hessian_diag = hessian_diag
         self.posterior_mean = torch.nn.utils.parameters_to_vector(self.parameters()).detach()
     
