@@ -64,7 +64,11 @@ class PaiNNWithEmbeddings(torch.nn.Module):
             self.readout_net.append(torch.nn.Linear(node_size, readout_size))
 
     def forward(self, input: Batch) -> torch.Tensor:
-        node_states_scalar = self.node_embedding(input.node_features.squeeze())
+        # Check for the presence of node features in the input batch
+        if not hasattr(input, 'node_features') or input.node_features is None:
+            raise AttributeError("Input batch does not have 'node_features' or it is None.")
+    
+        node_states_scalar = self.node_embedding(input.node_features.squeeze()
         # Init vector node states to zero as there is no initial directional information
         node_states_vector = torch.zeros(
             (node_states_scalar.shape[0], 3, self.node_size),
@@ -428,6 +432,9 @@ class LitPaiNNModel(L.LightningModule):
         self._on_eval_epoch_end("test")
 
     def _eval_step(self, batch, batch_idx, prefix):
+        # Check if node_features are present
+        if not hasattr(batch, 'node_features') or batch.node_features is None:
+            raise AttributeError(f"{prefix} Batch {batch_idx} does not have 'node_features' or it is None.")
         # Compute predictions and error
         with torch.enable_grad():  # Enable gradients for computing forces
             preds = self.forward(batch)
@@ -505,8 +512,11 @@ class LitPaiNNModel(L.LightningModule):
         
         for batch_idx, batch in enumerate(train_dataloader):
             batch = batch.to(device)  # Move batch to the device
-            # Debugging: Check if 'node_features' exists
-            if not hasattr(batch, 'node_states_scalar') or batch.node_states_scalar is None:
+            # Debugging: Print or log the batch structure
+            print(f"Batch {batch_idx} attributes: {dir(batch)}")  # Print all attributes of the batch
+            
+            # Check if node features exist
+            if not hasattr(batch, 'node_features') or batch.node_features is None:
                 raise AttributeError(f"Batch {batch_idx} does not have 'node_features' or it is None.")
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
