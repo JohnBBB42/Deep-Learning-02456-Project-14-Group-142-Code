@@ -285,35 +285,44 @@ class LitPaiNNModel(L.LightningModule):
 
 
     def forward(self, batch):
-      if self.heteroscedastic:
-          positions = getattr(batch, 'node_positions', None)
-          if positions is None:
-              positions = getattr(batch, 'pos', None)
-          if self.forces and positions is not None:
-              positions.requires_grad_(True)
-  
-          output_scalar, node_states_scalar = self.model(batch)
-          mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
-  
-          # Apply scaling to mean
-          mean = mean.squeeze(-1) * self._output_scale + self._output_offset
-          outputs = {
-              self.target_property: mean,
-              'log_variance': log_variance.squeeze(-1)
-          }
-  
-          # Compute forces if required
-          if self.forces and positions is not None:
-              energy = mean.sum()
-              forces = -torch.autograd.grad(
-                  energy, positions, create_graph=self.training, retain_graph=True
-              )[0]
-              outputs[self.forces_property] = forces  # Ensure 'forces' key is added
-
-      else:
-          outputs = self.model(batch)
+        if self.use_laplace:
+            positions = getattr(batch, 'node_positions', None)
+            if positions is None:
+                positions = getattr(batch, 'pos', None)
+            if self.forces and positions is not None:
+                positions.requires_grad_(True)
     
-      return outputs
+            # Unpack outputs correctly based on your model's return signature
+            outputs = self.model(batch)
+            if len(outputs) == 3:
+                output_scalar, node_states_scalar, laplacian_scalar = outputs
+            else:
+                output_scalar, node_states_scalar = outputs
+    
+            mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
+    
+            # Apply scaling to mean
+            mean = mean.squeeze(-1) * self._output_scale + self._output_offset
+            outputs_dict = {
+                self.target_property: mean,
+                'log_variance': log_variance.squeeze(-1)
+            }
+    
+            # Include Laplacian if computed
+            if len(outputs) == 3:
+                outputs_dict['laplacian'] = laplacian_scalar
+    
+            # Compute forces if required
+            if self.forces and positions is not None:
+                energy = mean.sum()
+                forces = -torch.autograd.grad(
+                    energy, positions, create_graph=self.training, retain_graph=True
+                )[0]
+                outputs_dict[self.forces_property] = forces
+        else:
+            outputs_dict = self.model(batch)
+  
+        return outputs_dict
 
 
     #def forward(self, batch):
