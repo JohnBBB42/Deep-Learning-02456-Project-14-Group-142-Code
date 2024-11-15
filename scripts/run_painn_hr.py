@@ -19,6 +19,7 @@ from atomgnn.models.utils import (BesselExpansion, compute_edge_vectors_and_norm
                                   cosine_cutoff, reduce_splits, sum_index)
 from atomgnn.models.painn import PaiNNInteractionBlock
 
+
 class PaiNNWithEmbeddings(torch.nn.Module):
     """PaiNN model that returns node embeddings and optionally computes the Laplacian."""
 
@@ -33,7 +34,6 @@ class PaiNNWithEmbeddings(torch.nn.Module):
         num_readout_layers: int = 2,
         readout_size: int = 1,
         readout_reduction: str | None = "sum",
-        use_laplace: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -46,7 +46,6 @@ class PaiNNWithEmbeddings(torch.nn.Module):
         self.num_readout_layers = num_readout_layers
         self.readout_size = readout_size
         self.readout_reduction = readout_reduction
-        self.use_laplace = use_laplace
 
         # Setup node embedding
         num_embeddings = 119  # atomic numbers + 1
@@ -68,7 +67,7 @@ class PaiNNWithEmbeddings(torch.nn.Module):
 
     def forward(self, input: Batch) -> torch.Tensor:
         if not hasattr(input, 'node_features') or input.node_features is None:
-            print("Warning: `node_features` is missing in the input batch. Please ensure that your data loader provides this attribute.")
+            print("Warning: node_features is missing in the input batch. Please ensure that your data loader provides this attribute.")
             raise AttributeError("Input batch does not have 'node_features' or it is None.")
         
         node_states_scalar = self.node_embedding(input.node_features.squeeze())
@@ -103,16 +102,7 @@ class PaiNNWithEmbeddings(torch.nn.Module):
             )
         else:
             output_scalar = node_states_scalar_readout
-
-        laplacian_scalar = None
-        if self.use_laplace:
-            laplacian_scalar = self._compute_laplacian(node_states_scalar, input.edge_index)
-        print(f"Output scalar shape: {output_scalar.shape}")
-        print(f"Node states scalar shape: {node_states_scalar.shape}")
-        if laplacian_scalar is not None:
-            print(f"Laplacian scalar shape: {laplacian_scalar.shape}")
-
-        return output_scalar, node_states_scalar, laplacian_scalar
+        return output_scalar, node_states_scalar
 
     def _compute_laplacian(self, node_states, edge_index):
         if edge_index.shape[0] != 2 and edge_index.shape[1] == 2:
@@ -124,8 +114,6 @@ class PaiNNWithEmbeddings(torch.nn.Module):
         degree = scatter(torch.ones_like(row, dtype=node_states.dtype), row, dim=0, reduce="sum")
         laplacian = degree.unsqueeze(1) * node_states - scatter(node_states[col], row, dim=0, reduce="sum")
         return laplacian
-
-
 
 
 class LitPaiNNModel(L.LightningModule):
@@ -153,7 +141,6 @@ class LitPaiNNModel(L.LightningModule):
         sam_rho: float = 0.05,
         # Heteroscedastic
         heteroscedastic: bool = False,
-        use_laplace: bool = False,
         # Underscores hide these arguments from the CLI
         _output_scale: float = 1.0,
         _output_offset: float = 0.0,
@@ -193,7 +180,6 @@ class LitPaiNNModel(L.LightningModule):
         self.sam_rho = sam_rho  # Add this line
         self.readout_reduction = readout_reduction
         self.heteroscedastic = heteroscedastic
-        self.use_laplace = use_laplace
         self._output_scale = _output_scale
         self._output_offset = _output_offset
         if self.use_sam and self.use_asam:
@@ -201,7 +187,6 @@ class LitPaiNNModel(L.LightningModule):
         if self.use_sam or self.use_asam:
             self.automatic_optimization = False  # Disable automatic optimization when using SAM
         # Initialize model
-
         if self.heteroscedastic:
             # Use the custom PaiNN model that returns embeddings
             model: torch.nn.Module = PaiNNWithEmbeddings(
@@ -211,7 +196,6 @@ class LitPaiNNModel(L.LightningModule):
                 cutoff=cutoff,
                 pbc=pbc,
                 readout_reduction=readout_reduction,
-                use_laplace=use_laplace,
             )
         else:
             model: torch.nn.Module = atomgnn.models.painn.PaiNN(
@@ -265,10 +249,6 @@ class LitPaiNNModel(L.LightningModule):
                 stress_weight=loss_stress_weight,
                 nodewise=loss_nodewise,
             )
-        if self.use_laplace:
-            self.num_parameters = sum(p.numel() for p in self.parameters())
-            self.posterior_mean = torch.nn.utils.parameters_to_vector(self.parameters()).detach()
-            self.hessian_diag = None  # Will be computed later
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
     def heteroscedastic_loss(self, preds, batch):
@@ -296,11 +276,7 @@ class LitPaiNNModel(L.LightningModule):
     
             # Unpack outputs from the model, which may include the Laplacian
             outputs = self.model(batch)
-            if len(outputs) == 3:
-                output_scalar, node_states_scalar, laplacian_scalar = outputs
-            else:
-                output_scalar, node_states_scalar = outputs
-                laplacian_scalar = None  # No Laplacian computed if not needed
+            output_scalar, node_states_scalar = outputs
     
             # Compute mean and log variance
             mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
@@ -311,10 +287,6 @@ class LitPaiNNModel(L.LightningModule):
                 self.target_property: mean,
                 'log_variance': log_variance.squeeze(-1)
             }
-    
-            # Include Laplacian in outputs if it was computed
-            if self.use_laplace and laplacian_scalar is not None:
-                outputs_dict['laplacian'] = laplacian_scalar
     
             # Compute forces if required
             if self.forces and positions is not None:
@@ -329,8 +301,6 @@ class LitPaiNNModel(L.LightningModule):
     
         return outputs_dict
 
-
-
     #def forward(self, batch):
         #return self.model(batch)
 
@@ -342,10 +312,6 @@ class LitPaiNNModel(L.LightningModule):
             preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
-            # Add Laplacian regularization term if desired
-            if self.use_laplace and 'laplacian' in preds:
-                laplacian_term = torch.mean(torch.norm(preds['laplacian'], dim=1))
-                loss += 0.01 * laplacian_term  # Adjust the coefficient as needed
             self.manual_backward(loss)
             # Compute gradient norm
             grad_norm = torch.norm(
@@ -388,10 +354,6 @@ class LitPaiNNModel(L.LightningModule):
             preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
-            # Add Laplacian regularization term if desired
-            if self.use_laplace and 'laplacian' in preds:
-                laplacian_term = torch.mean(torch.norm(preds['laplacian'], dim=1))
-                loss += 0.01 * laplacian_term  # Adjust the coefficient as needed
             self.manual_backward(loss)
             # Compute parameter norms and scaled gradients
             with torch.no_grad():
@@ -443,10 +405,6 @@ class LitPaiNNModel(L.LightningModule):
             preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
-            # Add Laplacian regularization term if desired
-            if self.use_laplace and 'laplacian' in preds:
-                laplacian_term = torch.mean(torch.norm(preds['laplacian'], dim=1))
-                loss += 0.01 * laplacian_term  # Adjust the coefficient as needed
             self.log("train_loss", loss)
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
@@ -483,8 +441,6 @@ class LitPaiNNModel(L.LightningModule):
 
     def _eval_step(self, batch, batch_idx, prefix):
         # Check if node_features are present
-        print(f"{prefix} Batch attributes: {dir(batch)}")
-        print(f"Node features shape: {getattr(batch, 'node_features', None)}")
         if not hasattr(batch, 'node_features') or batch.node_features is None:
             raise AttributeError(f"{prefix} Batch {batch_idx} does not have 'node_features' or it is None.")
         # Compute predictions and error
@@ -557,65 +513,6 @@ class LitPaiNNModel(L.LightningModule):
         std = torch.sqrt(1.0 / (self.hessian_diag + 1e-6))
         sampled_params = self.posterior_mean + std * torch.randn_like(self.posterior_mean)
         torch.nn.utils.vector_to_parameters(sampled_params, self.parameters())
-        
-    def on_save_checkpoint(self, checkpoint):
-        # Call the superclass method to handle default behavior
-        super().on_save_checkpoint(checkpoint)
-        if self.use_laplace:
-            # Save the Laplace approximation parameters
-            checkpoint['posterior_mean'] = self.posterior_mean
-            checkpoint['hessian_diag'] = self.hessian_diag
-
-    def on_load_checkpoint(self, checkpoint):
-        # Call the superclass method to handle default behavior
-        super().on_load_checkpoint(checkpoint)
-        if self.use_laplace:
-            # Load the Laplace approximation parameters
-            self.posterior_mean = checkpoint['posterior_mean']
-            self.hessian_diag = checkpoint['hessian_diag']
-
-    def laplace_approximation(self):
-        """Apply Laplace approximation for posterior estimation."""
-        print("Attributes of Batch in laplace_approximation:", dir(batch))
-        self.model.eval()
-        device = next(self.parameters()).device
-        hessian_diag = torch.zeros(self.num_parameters, device=device)
-    
-        if self.trainer is not None and hasattr(self.trainer.datamodule, 'train_dataloader'):
-            train_dataloader = self.trainer.datamodule.train_dataloader()
-        else:
-            raise ValueError("Trainer or DataModule is not available. Cannot perform Laplace approximation.")
-    
-        print("Type of data loader: ", type(train_dataloader))
-        for batch_idx, batch in enumerate(train_dataloader):
-            print(f"Laplace approximation batch {batch_idx} attributes: {dir(batch)}")
-            print(f"Node features in batch {batch_idx}: {getattr(batch, 'node_features', None)}")
-            batch = batch.to(device)
-    
-            if not hasattr(batch, 'node_features') or batch.node_features is None:
-                raise AttributeError(f"Laplace approximation batch {batch_idx} does not have 'node_features' or it is None.")
-    
-            preds = self.forward(batch)
-            loss = self.loss_function(preds, batch)
-            loss.backward(create_graph=True)
-            
-            with torch.no_grad():
-                idx = 0
-                for p in self.parameters():
-                    if p.grad is not None:
-                        numel = p.numel()
-                        hessian_diag[idx:idx + numel] = p.grad.detach().flatten() ** 2
-                        idx += numel
-                self.zero_grad()
-    
-        self.hessian_diag = hessian_diag
-        self.posterior_mean = torch.nn.utils.parameters_to_vector(self.parameters()).detach()
-
-    
-    def on_fit_end(self):
-        if self.use_laplace:
-            self.laplace_approximation()
-
 
 class LitSWAGPaiNNModel(LitPaiNNModel):
     """SWAG model extending LitPaiNNModel."""
@@ -731,8 +628,6 @@ def main():
     cli.link_arguments("sam_rho", "model.sam_rho", apply_on="parse")
     # Link heteroscedastic argument
     cli.link_arguments("heteroscedastic", "model.heteroscedastic", apply_on="parse")
-    # Link Laplace approximation argument
-    cli.link_arguments("use_laplace", "model.use_laplace", apply_on="parse")
   
     # Run the script
     cfg = cli.parse_args()
