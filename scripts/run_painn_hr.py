@@ -300,7 +300,7 @@ class LitPaiNNModel(L.LightningModule):
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             # Add Laplacian regularization term if desired
-            if 'laplacian' in preds:
+            if self.use_laplace and 'laplacian' in preds:
                 laplacian_term = torch.mean(torch.norm(preds['laplacian'], dim=1))
                 loss += 0.01 * laplacian_term  # Adjust the coefficient as needed
             self.manual_backward(loss)
@@ -346,7 +346,7 @@ class LitPaiNNModel(L.LightningModule):
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             # Add Laplacian regularization term if desired
-            if 'laplacian' in preds:
+            if self.use_laplace and 'laplacian' in preds:
                 laplacian_term = torch.mean(torch.norm(preds['laplacian'], dim=1))
                 loss += 0.01 * laplacian_term  # Adjust the coefficient as needed
             self.manual_backward(loss)
@@ -401,7 +401,7 @@ class LitPaiNNModel(L.LightningModule):
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             # Add Laplacian regularization term if desired
-            if 'laplacian' in preds:
+            if self.use_laplace and 'laplacian' in preds:
                 laplacian_term = torch.mean(torch.norm(preds['laplacian'], dim=1))
                 loss += 0.01 * laplacian_term  # Adjust the coefficient as needed
             self.log("train_loss", loss)
