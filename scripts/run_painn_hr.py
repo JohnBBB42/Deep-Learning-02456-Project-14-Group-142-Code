@@ -201,7 +201,7 @@ class LitPaiNNModel(L.LightningModule):
             self.automatic_optimization = False  # Disable automatic optimization when using SAM
         # Initialize model
 
-        if self.use_laplace:
+        if self.heteroscedastic:
             # Use the custom PaiNN model that returns embeddings
             model: torch.nn.Module = PaiNNWithEmbeddings(
                 node_size=node_size,
