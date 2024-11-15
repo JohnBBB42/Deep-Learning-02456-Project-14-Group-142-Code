@@ -720,8 +720,6 @@ def main():
     cfg = cli.parse_args()
     if cfg.use_swag:
         lit_model_cls = LitSWAGPaiNNModel
-    elif cfg.use_laplace:
-        lit_model_cls = PaiNNWithEmbeddings
     else:
         lit_model_cls = LitPaiNNModel
       
