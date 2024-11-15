@@ -106,6 +106,7 @@ class PaiNNWithEmbeddings(torch.nn.Module):
             # Node-level output
             output_scalar = node_states_scalar_readout
         # Calculate Laplacian of node states (as an example, for scalar states)
+        if 
         laplacian_scalar = self._compute_laplacian(node_states_scalar, input.edge_index)
         # Return both the output and node embeddings
         return output_scalar, node_states_scalar, laplacian_scalar  # node_states_scalar are the node embeddings
@@ -275,7 +276,7 @@ class LitPaiNNModel(L.LightningModule):
 
 
     def forward(self, batch):
-        if self.heteroscedastic:
+        if self.use_laplace:
             output_scalar, node_states_scalar, laplacian_scalar = self.model(batch)
             mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
             # Apply scaling to mean
