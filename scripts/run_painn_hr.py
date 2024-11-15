@@ -495,8 +495,6 @@ class LitPaiNNModel(L.LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
         if self.forces or self.stress:
             torch.set_grad_enabled(True)  # Enable gradients
-        if self.use_laplace:
-            self.sample_from_posterior()
         preds = self.forward(batch)
         return {k: v.detach().cpu() for k, v in preds.items()}
 
@@ -504,14 +502,6 @@ class LitPaiNNModel(L.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
-    
-    def sample_from_posterior(self):
-        """Sample parameters from the approximate posterior."""
-        if self.hessian_diag is None:
-            raise ValueError("Hessian diagonal not computed. Call laplace_approximation first.")
-        std = torch.sqrt(1.0 / (self.hessian_diag + 1e-6))
-        sampled_params = self.posterior_mean + std * torch.randn_like(self.posterior_mean)
-        torch.nn.utils.vector_to_parameters(sampled_params, self.parameters())
 
 class LitSWAGPaiNNModel(LitPaiNNModel):
     """SWAG model extending LitPaiNNModel."""
