@@ -107,6 +107,10 @@ class PaiNNWithEmbeddings(torch.nn.Module):
         laplacian_scalar = None
         if self.use_laplace:
             laplacian_scalar = self._compute_laplacian(node_states_scalar, input.edge_index)
+        print(f"Output scalar shape: {output_scalar.shape}")
+        print(f"Node states scalar shape: {node_states_scalar.shape}")
+        if laplacian_scalar is not None:
+            print(f"Laplacian scalar shape: {laplacian_scalar.shape}")
 
         return output_scalar, node_states_scalar, laplacian_scalar
 
@@ -572,6 +576,7 @@ class LitPaiNNModel(L.LightningModule):
 
     def laplace_approximation(self):
         """Apply Laplace approximation for posterior estimation."""
+        print("Attributes of Batch in laplace_approximation:", dir(batch))
         self.model.eval()
         device = next(self.parameters()).device
         hessian_diag = torch.zeros(self.num_parameters, device=device)
@@ -581,12 +586,11 @@ class LitPaiNNModel(L.LightningModule):
         else:
             raise ValueError("Trainer or DataModule is not available. Cannot perform Laplace approximation.")
     
+        print("Type of data loader: ", type(train_dataloader))
         for batch_idx, batch in enumerate(train_dataloader):
-            batch = batch.to(device)
-    
-            # Debug: Check for 'node_features' before proceeding
             print(f"Laplace approximation batch {batch_idx} attributes: {dir(batch)}")
-            print(f"Node features in Laplace approximation: {getattr(batch, 'node_features', None)}")
+            print(f"Node features in batch {batch_idx}: {getattr(batch, 'node_features', None)}")
+            batch = batch.to(device)
     
             if not hasattr(batch, 'node_features') or batch.node_features is None:
                 raise AttributeError(f"Laplace approximation batch {batch_idx} does not have 'node_features' or it is None.")
