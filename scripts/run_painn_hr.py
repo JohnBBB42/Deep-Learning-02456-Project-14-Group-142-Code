@@ -565,6 +565,34 @@ class LitPaiNNModel(L.LightningModule):
             # Load the Laplace approximation parameters
             self.posterior_mean = checkpoint['posterior_mean']
             self.hessian_diag = checkpoint['hessian_diag']
+
+    def laplace_approximation(self):
+        """Apply Laplace approximation for posterior estimation."""
+        self.model.eval()
+        device = next(self.parameters()).device
+        hessian_diag = torch.zeros(self.num_parameters, device=device)
+
+        if self.trainer is not None and hasattr(self.trainer.datamodule, 'train_dataloader'):
+            train_dataloader = self.trainer.datamodule.train_dataloader()
+        else:
+            raise ValueError("Trainer or DataModule is not available. Cannot perform Laplace approximation.")
+
+        for batch_idx, batch in enumerate(train_dataloader):
+            batch = batch.to(device)
+            preds = self.forward(batch)
+            loss = self.loss_function(preds, batch)
+            loss.backward(create_graph=True)
+            with torch.no_grad():
+                idx = 0
+                for p in self.parameters():
+                    if p.grad is not None:
+                        numel = p.numel()
+                        hessian_diag[idx:idx + numel] = p.grad.detach().flatten() ** 2
+                        idx += numel
+                self.zero_grad()
+
+        self.hessian_diag = hessian_diag
+        self.posterior_mean = torch.nn.utils.parameters_to_vector(self.parameters()).detach()
     
     def on_fit_end(self):
         if self.use_laplace:
