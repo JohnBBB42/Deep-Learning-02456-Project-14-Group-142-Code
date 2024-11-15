@@ -68,7 +68,7 @@ class PaiNNWithEmbeddings(torch.nn.Module):
         if not hasattr(input, 'node_features') or input.node_features is None:
             raise AttributeError("Input batch does not have 'node_features' or it is None.")
     
-        node_states_scalar = self.node_embedding(input.node_features.squeeze()
+        node_states_scalar = self.node_embedding(input.node_features.squeeze())
         # Init vector node states to zero as there is no initial directional information
         node_states_vector = torch.zeros(
             (node_states_scalar.shape[0], 3, self.node_size),
