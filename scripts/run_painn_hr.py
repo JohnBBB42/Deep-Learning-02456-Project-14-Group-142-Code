@@ -285,18 +285,36 @@ class LitPaiNNModel(L.LightningModule):
 
 
     def forward(self, batch):
-        if self.use_laplace:
-            output_scalar, node_states_scalar, laplacian_scalar = self.model(batch)
-            mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
-            # Apply scaling to mean
-            outputs = {
-                self.target_property: mean,
-                'log_variance': log_variance.squeeze(-1),
-                'laplacian': laplacian_scalar  # Include Laplacian in output
-            }
-        else:
-            outputs = self.model(batch)
-        return outputs
+      if self.heteroscedastic:
+          positions = getattr(batch, 'node_positions', None)
+          if positions is None:
+              positions = getattr(batch, 'pos', None)
+          if self.forces and positions is not None:
+              positions.requires_grad_(True)
+  
+          output_scalar, node_states_scalar = self.model(batch)
+          mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
+  
+          # Apply scaling to mean
+          mean = mean.squeeze(-1) * self._output_scale + self._output_offset
+          outputs = {
+              self.target_property: mean,
+              'log_variance': log_variance.squeeze(-1)
+          }
+  
+          # Compute forces if required
+          if self.forces and positions is not None:
+              energy = mean.sum()
+              forces = -torch.autograd.grad(
+                  energy, positions, create_graph=self.training, retain_graph=True
+              )[0]
+              outputs[self.forces_property] = forces  # Ensure 'forces' key is added
+
+      else:
+          outputs = self.model(batch)
+    
+      return outputs
+
 
     #def forward(self, batch):
         #return self.model(batch)
