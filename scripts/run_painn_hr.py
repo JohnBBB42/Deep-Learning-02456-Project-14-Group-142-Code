@@ -112,7 +112,11 @@ class PaiNNWithEmbeddings(torch.nn.Module):
     
     def _compute_laplacian(self, node_states, edge_index):
         """Compute the graph Laplacian for node states."""
-        # Ensure edge_index is of shape (2, num_edges)
+        # Transpose if edge_index has shape (num_edges, 2)
+        if edge_index.shape[0] != 2 and edge_index.shape[1] == 2:
+            edge_index = edge_index.t()
+    
+        # Ensure edge_index is now of shape (2, num_edges)
         if edge_index.ndim != 2 or edge_index.shape[0] != 2:
             raise ValueError(f"Expected edge_index to have shape (2, num_edges), but got {edge_index.shape}")
         
@@ -120,6 +124,7 @@ class PaiNNWithEmbeddings(torch.nn.Module):
         degree = scatter(torch.ones_like(row, dtype=node_states.dtype), row, dim=0, reduce="sum")
         laplacian = degree.unsqueeze(1) * node_states - scatter(node_states[col], row, dim=0, reduce="sum")
         return laplacian
+
 
 
 class LitPaiNNModel(L.LightningModule):
@@ -196,7 +201,7 @@ class LitPaiNNModel(L.LightningModule):
             self.automatic_optimization = False  # Disable automatic optimization when using SAM
         # Initialize model
 
-        if self.heteroscedastic:
+        if self.use_laplace:
             # Use the custom PaiNN model that returns embeddings
             model: torch.nn.Module = PaiNNWithEmbeddings(
                 node_size=node_size,
