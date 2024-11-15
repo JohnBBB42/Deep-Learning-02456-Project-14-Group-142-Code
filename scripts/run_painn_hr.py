@@ -106,8 +106,10 @@ class PaiNNWithEmbeddings(torch.nn.Module):
             # Node-level output
             output_scalar = node_states_scalar_readout
         # Calculate Laplacian of node states (as an example, for scalar states)
-        if 
-        laplacian_scalar = self._compute_laplacian(node_states_scalar, input.edge_index)
+        if self.use_laplace:
+            laplacian_scalar = self._compute_laplacian(node_states_scalar, input.edge_index)
+        else:
+            laplacian_scalar = output_scalar
         # Return both the output and node embeddings
         return output_scalar, node_states_scalar, laplacian_scalar  # node_states_scalar are the node embeddings
     
