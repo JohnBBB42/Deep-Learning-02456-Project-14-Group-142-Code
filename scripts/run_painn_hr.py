@@ -64,8 +64,9 @@ class PaiNNWithEmbeddings(torch.nn.Module):
             self.readout_net.append(torch.nn.Linear(node_size, readout_size))
 
     def forward(self, input: Batch) -> torch.Tensor:
-        # Get scalar node states by embedding node features
-        node_states_scalar = self.node_embedding(input.node_features.squeeze())
+        if not hasattr(batch, 'node_features') or batch.node_features is None:
+            raise AttributeError("Batch object does not have 'node_features' or it is None.")
+        node_states_scalar = self.node_embedding(batch.node_features.squeeze())
         # Init vector node states to zero as there is no initial directional information
         node_states_vector = torch.zeros(
             (node_states_scalar.shape[0], 3, self.node_size),
@@ -499,13 +500,16 @@ class LitPaiNNModel(L.LightningModule):
         hessian_diag = torch.zeros(self.num_parameters, device=device)
         
         # Access train_dataloader from self.trainer.datamodule
-        if self.trainer is not None and hasattr(self.trainer, 'datamodule'):
+        if self.trainer is not None and hasattr(self.trainer.datamodule, 'train_dataloader'):
             train_dataloader = self.trainer.datamodule.train_dataloader()
         else:
             raise ValueError("Trainer or DataModule is not available. Cannot perform Laplace approximation.")
         
-        for batch in train_dataloader:
+        for batch_idx, batch in enumerate(train_dataloader):
             batch = batch.to(device)  # Move batch to the device
+            # Debugging: Check if 'node_features' exists
+            if not hasattr(batch, 'node_features') or batch.node_features is None:
+                raise AttributeError(f"Batch {batch_idx} does not have 'node_features' or it is None.")
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             loss.backward(create_graph=True)
@@ -519,6 +523,7 @@ class LitPaiNNModel(L.LightningModule):
                 self.zero_grad()  # Reset gradients before the next iteration
         self.hessian_diag = hessian_diag  # Store hessian_diag for later use
         self.posterior_mean = torch.nn.utils.parameters_to_vector(self.parameters()).detach()
+        logging.info("Laplace approximation completed successfully.")
 
 
     
