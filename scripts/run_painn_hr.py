@@ -572,7 +572,7 @@ class LitPaiNNModel(L.LightningModule):
 
     def laplace_approximation(self):
         """Apply Laplace approximation for posterior estimation."""
-        self.model.eval()  # Ensure the model is in evaluation mode
+        self.model.eval()
         device = next(self.parameters()).device
         hessian_diag = torch.zeros(self.num_parameters, device=device)
     
@@ -583,9 +583,18 @@ class LitPaiNNModel(L.LightningModule):
     
         for batch_idx, batch in enumerate(train_dataloader):
             batch = batch.to(device)
+    
+            # Debug: Check for 'node_features' before proceeding
+            print(f"Laplace approximation batch {batch_idx} attributes: {dir(batch)}")
+            print(f"Node features in Laplace approximation: {getattr(batch, 'node_features', None)}")
+    
+            if not hasattr(batch, 'node_features') or batch.node_features is None:
+                raise AttributeError(f"Laplace approximation batch {batch_idx} does not have 'node_features' or it is None.")
+    
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             loss.backward(create_graph=True)
+            
             with torch.no_grad():
                 idx = 0
                 for p in self.parameters():
@@ -597,6 +606,7 @@ class LitPaiNNModel(L.LightningModule):
     
         self.hessian_diag = hessian_diag
         self.posterior_mean = torch.nn.utils.parameters_to_vector(self.parameters()).detach()
+
     
     def on_fit_end(self):
         if self.use_laplace:
