@@ -105,11 +105,17 @@ class PaiNNWithEmbeddings(torch.nn.Module):
         else:
             # Node-level output
             output_scalar = node_states_scalar_readout
+        # Calculate Laplacian of node states (as an example, for scalar states)
+        laplacian_scalar = self._compute_laplacian(node_states_scalar, input.edge_index)
         # Return both the output and node embeddings
-        return output_scalar, node_states_scalar  # node_states_scalar are the node embeddings
-
-
-
+        return output_scalar, node_states_scalar, laplacian_scalar  # node_states_scalar are the node embeddings
+    
+    def _compute_laplacian(self, node_states, edge_index):
+        """Compute the graph Laplacian for node states."""
+        row, col = edge_index
+        degree = scatter(torch.ones_like(row, dtype=node_states.dtype), row, dim=0, reduce="sum")
+        laplacian = degree.unsqueeze(1) * node_states - scatter(node_states[col], row, dim=0, reduce="sum")
+        return laplacian
 
 class LitPaiNNModel(L.LightningModule):
     """PaiNN model."""
@@ -270,25 +276,14 @@ class LitPaiNNModel(L.LightningModule):
 
     def forward(self, batch):
         if self.heteroscedastic:
-            positions = getattr(batch, 'node_positions', None)
-            if positions is None:
-                positions = getattr(batch, 'pos', None)
-            if self.forces and positions is not None:
-                positions.requires_grad_(True)
-            output_scalar, node_states_scalar = self.model(batch)
+            output_scalar, node_states_scalar, laplacian_scalar = self.model(batch)
             mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
             # Apply scaling to mean
-            mean = mean.squeeze(-1) * self._output_scale + self._output_offset
             outputs = {
                 self.target_property: mean,
-                'log_variance': log_variance.squeeze(-1)
+                'log_variance': log_variance.squeeze(-1),
+                'laplacian': laplacian_scalar  # Include Laplacian in output
             }
-            if self.forces and positions is not None:
-                energy = mean.sum()
-                forces = -torch.autograd.grad(
-                    energy, positions, create_graph=self.training, retain_graph=True
-                )[0]
-                outputs[self.forces_property] = forces
         else:
             outputs = self.model(batch)
         return outputs
@@ -304,6 +299,10 @@ class LitPaiNNModel(L.LightningModule):
             preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
+            # Add Laplacian regularization term if desired
+            if 'laplacian' in preds:
+                laplacian_term = torch.mean(torch.norm(preds['laplacian'], dim=1))
+                loss += 0.01 * laplacian_term  # Adjust the coefficient as needed
             self.manual_backward(loss)
             # Compute gradient norm
             grad_norm = torch.norm(
@@ -346,6 +345,10 @@ class LitPaiNNModel(L.LightningModule):
             preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
+            # Add Laplacian regularization term if desired
+            if 'laplacian' in preds:
+                laplacian_term = torch.mean(torch.norm(preds['laplacian'], dim=1))
+                loss += 0.01 * laplacian_term  # Adjust the coefficient as needed
             self.manual_backward(loss)
             # Compute parameter norms and scaled gradients
             with torch.no_grad():
@@ -397,6 +400,10 @@ class LitPaiNNModel(L.LightningModule):
             preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
+            # Add Laplacian regularization term if desired
+            if 'laplacian' in preds:
+                laplacian_term = torch.mean(torch.norm(preds['laplacian'], dim=1))
+                loss += 0.01 * laplacian_term  # Adjust the coefficient as needed
             self.log("train_loss", loss)
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
@@ -497,43 +504,6 @@ class LitPaiNNModel(L.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
-      
-    def laplace_approximation(self):
-        """Apply Laplace approximation for posterior estimation."""
-        self.model.eval()
-        device = next(self.parameters()).device  # Get the device of the model
-        hessian_diag = torch.zeros(self.num_parameters, device=device)
-        
-        # Access train_dataloader from self.trainer.datamodule
-        if self.trainer is not None and hasattr(self.trainer.datamodule, 'train_dataloader'):
-            train_dataloader = self.trainer.datamodule.train_dataloader()
-        else:
-            raise ValueError("Trainer or DataModule is not available. Cannot perform Laplace approximation.")
-        
-        for batch_idx, batch in enumerate(train_dataloader):
-            batch = batch.to(device)  # Move batch to the device
-            # Debugging: Print or log the batch structure
-            print(f"Batch {batch_idx} attributes: {dir(batch)}")  # Print all attributes of the batch
-            
-            # Check if node features exist
-            if not hasattr(batch, 'node_features') or batch.node_features is None:
-                raise AttributeError(f"Batch {batch_idx} does not have 'node_features' or it is None.")
-            preds = self.forward(batch)
-            loss = self.loss_function(preds, batch)
-            loss.backward(create_graph=True)
-            with torch.no_grad():
-                idx = 0
-                for p in self.parameters():
-                    if p.grad is not None:
-                        numel = p.numel()
-                        hessian_diag[idx:idx+numel] = p.grad.detach().flatten() ** 2
-                        idx += numel
-                self.zero_grad()  # Reset gradients before the next iteration
-        self.hessian_diag = hessian_diag  # Store hessian_diag for later use
-        self.posterior_mean = torch.nn.utils.parameters_to_vector(self.parameters()).detach()
-        logging.info("Laplace approximation completed successfully.")
-
-
     
     def sample_from_posterior(self):
         """Sample parameters from the approximate posterior."""
