@@ -68,8 +68,9 @@ class PaiNNWithEmbeddings(torch.nn.Module):
 
     def forward(self, input: Batch) -> torch.Tensor:
         if not hasattr(input, 'node_features') or input.node_features is None:
+            print("Warning: `node_features` is missing in the input batch. Please ensure that your data loader provides this attribute.")
             raise AttributeError("Input batch does not have 'node_features' or it is None.")
-    
+        
         node_states_scalar = self.node_embedding(input.node_features.squeeze())
         node_states_vector = torch.zeros(
             (node_states_scalar.shape[0], 3, self.node_size),
@@ -478,6 +479,8 @@ class LitPaiNNModel(L.LightningModule):
 
     def _eval_step(self, batch, batch_idx, prefix):
         # Check if node_features are present
+        print(f"{prefix} Batch attributes: {dir(batch)}")
+        print(f"Node features shape: {getattr(batch, 'node_features', None)}")
         if not hasattr(batch, 'node_features') or batch.node_features is None:
             raise AttributeError(f"{prefix} Batch {batch_idx} does not have 'node_features' or it is None.")
         # Compute predictions and error
