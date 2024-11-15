@@ -207,7 +207,7 @@ class LitPaiNNModel(L.LightningModule):
             self.readout = torch.nn.Linear(node_size, 1)
         output_keys = [self.target_property]
         if self.heteroscedastic:
-            output_keys.append('node_embeddings')
+            output_keys.append('node_states_scalar')
         if not self.heteroscedastic:
             model = atomgnn.models.utils.DictOutputWrapper(
                 model,
@@ -271,8 +271,8 @@ class LitPaiNNModel(L.LightningModule):
                 positions = getattr(batch, 'pos', None)
             if self.forces and positions is not None:
                 positions.requires_grad_(True)
-            output_scalar, node_embeddings = self.model(batch)
-            mean, log_variance = self.readout(node_embeddings, batch.node_data_index)
+            output_scalar, node_states_scalar = self.model(batch)
+            mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
             # Apply scaling to mean
             mean = mean.squeeze(-1) * self._output_scale + self._output_offset
             outputs = {
@@ -506,7 +506,7 @@ class LitPaiNNModel(L.LightningModule):
         for batch_idx, batch in enumerate(train_dataloader):
             batch = batch.to(device)  # Move batch to the device
             # Debugging: Check if 'node_features' exists
-            if not hasattr(batch, 'node_features') or batch.node_features is None:
+            if not hasattr(batch, 'node_states_scalar') or batch.node_states_scalar is None:
                 raise AttributeError(f"Batch {batch_idx} does not have 'node_features' or it is None.")
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
