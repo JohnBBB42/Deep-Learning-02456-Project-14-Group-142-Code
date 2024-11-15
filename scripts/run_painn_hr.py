@@ -36,7 +36,7 @@ class PaiNNWithEmbeddings(torch.nn.Module):
         use_laplace: bool = False,
         **kwargs,
     ) -> None:
-        super().__init__()
+        super().__init__(**kwargs)
         self.node_size = node_size
         self.edge_size = edge_size
         self.num_interaction_blocks = num_interaction_blocks
