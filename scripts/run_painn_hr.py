@@ -21,7 +21,6 @@ from atomgnn.models.painn import PaiNNInteractionBlock
 
 
 class PaiNNWithEmbeddings(torch.nn.Module):
-    """PaiNN model that returns node embeddings and optionally computes the Laplacian."""
 
     def __init__(
         self,
