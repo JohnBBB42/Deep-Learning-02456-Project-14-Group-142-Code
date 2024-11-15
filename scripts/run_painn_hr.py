@@ -64,9 +64,7 @@ class PaiNNWithEmbeddings(torch.nn.Module):
             self.readout_net.append(torch.nn.Linear(node_size, readout_size))
 
     def forward(self, input: Batch) -> torch.Tensor:
-        if not hasattr(batch, 'node_features') or batch.node_features is None:
-            raise AttributeError("Batch object does not have 'node_features' or it is None.")
-        node_states_scalar = self.node_embedding(batch.node_features.squeeze())
+        node_states_scalar = self.node_embedding(input.node_features.squeeze())
         # Init vector node states to zero as there is no initial directional information
         node_states_vector = torch.zeros(
             (node_states_scalar.shape[0], 3, self.node_size),
