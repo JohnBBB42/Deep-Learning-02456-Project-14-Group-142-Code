@@ -103,17 +103,6 @@ class PaiNNWithEmbeddings(torch.nn.Module):
             output_scalar = node_states_scalar_readout
         return output_scalar, node_states_scalar
 
-    def _compute_laplacian(self, node_states, edge_index):
-        if edge_index.shape[0] != 2 and edge_index.shape[1] == 2:
-            edge_index = edge_index.t()
-        if edge_index.ndim != 2 or edge_index.shape[0] != 2:
-            raise ValueError(f"Expected edge_index to have shape (2, num_edges), but got {edge_index.shape}")
-
-        row, col = edge_index[0], edge_index[1]
-        degree = scatter(torch.ones_like(row, dtype=node_states.dtype), row, dim=0, reduce="sum")
-        laplacian = degree.unsqueeze(1) * node_states - scatter(node_states[col], row, dim=0, reduce="sum")
-        return laplacian
-
 
 class LitPaiNNModel(L.LightningModule):
     """PaiNN model."""
