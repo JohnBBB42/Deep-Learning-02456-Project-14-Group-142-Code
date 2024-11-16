@@ -213,27 +213,26 @@ class LitPaiNNModel(L.LightningModule):
         output_keys = [self.target_property]
         if self.heteroscedastic:
             output_keys.append('node_states_scalar')
-        if not self.heteroscedastic:
-            model = atomgnn.models.utils.DictOutputWrapper(
-                model,
-                #output_keys=[self.target_property],
-                output_keys=output_keys,
-            )
-            model = atomgnn.models.utils.ScaleOutputWrapper(
-                model,
-                output_property=self.target_property,
-                scale=torch.tensor(_output_scale),
-                offset=torch.tensor(_output_offset),
-                nodewise=_nodewise_offset,
-            )
-            model = atomgnn.models.utils.GradOutputWrapper(
-                model,
-                forces=forces,
-                stress=stress,
-                energy_property=self.target_property,
-                forces_property=self.forces_property,
-                stress_property=self.stress_property,
-            )
+        model = atomgnn.models.utils.DictOutputWrapper(
+            model,
+            #output_keys=[self.target_property],
+            output_keys=output_keys,
+        )
+        model = atomgnn.models.utils.ScaleOutputWrapper(
+            model,
+            output_property=self.target_property,
+            scale=torch.tensor(_output_scale),
+            offset=torch.tensor(_output_offset),
+            nodewise=_nodewise_offset,
+        )
+        model = atomgnn.models.utils.GradOutputWrapper(
+            model,
+            forces=forces,
+            stress=stress,
+            energy_property=self.target_property,
+            forces_property=self.forces_property,
+            stress_property=self.stress_property,
+        )
         self.model = model
         # Initialize loss function
         if self.heteroscedastic:
