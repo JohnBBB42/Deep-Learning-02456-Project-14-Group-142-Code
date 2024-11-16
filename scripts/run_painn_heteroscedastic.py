@@ -248,9 +248,12 @@ class LitPaiNNModel(L.LightningModule):
         # Get the targets
         targets = batch.energy if self.target_property == "energy" else batch.targets
         num_nodes = batch.num_nodes.unsqueeze(1)
-    
+        
+        # Check if nodewise loss should be applied
+        nodewise = self.hparams.loss_nodewise
+        
         # Calculate the heteroscedastic loss for the main target (energy)
-        error = (targets - preds[self.target_property]) / num_nodes if self.nodewise else targets - preds[self.target_property]
+        error = (targets - preds[self.target_property]) / num_nodes if nodewise else targets - preds[self.target_property]
         log_variance = preds["log_variance"]
         variance = torch.exp(log_variance)
         
@@ -269,7 +272,7 @@ class LitPaiNNModel(L.LightningModule):
         # Add forces loss if enabled
         if self.forces:
             forces_error = batch.forces - preds[self.forces_property]
-            if self.nodewise:
+            if nodewise:
                 forces_loss = self.hparams.loss_forces_weight * mse_loss(preds[self.forces_property], batch.forces)
             else:
                 forces_loss = self.hparams.loss_forces_weight * mse_loss(preds[self.forces_property], batch.forces, reduction="sum") / batch.num_data
