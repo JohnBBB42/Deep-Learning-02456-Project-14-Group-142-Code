@@ -213,27 +213,13 @@ class LitPaiNNModel(L.LightningModule):
         output_keys = [self.target_property]
         if self.heteroscedastic:
             output_keys.append('node_states_scalar')
-        # Before wrapping with DictOutputWrapper
-        print("Before DictOutputWrapper:")
-        print(f"Model type: {type(model)}")
-        print(f"Model architecture:\n{model}\n")
-        
+        # Before wrapping with DictOutputWrapper        
         # Wrap the model with DictOutputWrapper
         model = atomgnn.models.utils.DictOutputWrapper(
             model,
             #output_keys=[self.target_property],
             output_keys=output_keys,
         )
-        
-        # After wrapping with DictOutputWrapper
-        print("After DictOutputWrapper:")
-        print(f"Model type: {type(model)}")
-        print(f"Model architecture:\n{model}\n")
-        
-        # Before wrapping with ScaleOutputWrapper
-        print("Before ScaleOutputWrapper:")
-        print(f"Model type: {type(model)}")
-        print(f"Model architecture:\n{model}\n")
         
         # Wrap the model with ScaleOutputWrapper
         model = atomgnn.models.utils.ScaleOutputWrapper(
@@ -243,16 +229,6 @@ class LitPaiNNModel(L.LightningModule):
             offset=torch.tensor(_output_offset),
             nodewise=_nodewise_offset,
         )
-        
-        # After wrapping with ScaleOutputWrapper
-        print("After ScaleOutputWrapper:")
-        print(f"Model type: {type(model)}")
-        print(f"Model architecture:\n{model}\n")
-        
-        # Before wrapping with GradOutputWrapper
-        print("Before GradOutputWrapper:")
-        print(f"Model type: {type(model)}")
-        print(f"Model architecture:\n{model}\n")
         
         # Wrap the model with GradOutputWrapper
         model = atomgnn.models.utils.GradOutputWrapper(
@@ -264,10 +240,6 @@ class LitPaiNNModel(L.LightningModule):
             stress_property=self.stress_property,
         )
         
-        # After wrapping with GradOutputWrapper
-        print("After GradOutputWrapper:")
-        print(f"Model type: {type(model)}")
-        print(f"Model architecture:\n{model}\n")
         self.model = model
         # Initialize loss function
         if self.heteroscedastic:
@@ -307,10 +279,28 @@ class LitPaiNNModel(L.LightningModule):
             if self.forces and positions is not None:
                 positions.requires_grad_(True)
     
-            # Unpack outputs from the model, which may include the Laplacian
-            outputs = self.model(batch)
-            output_scalar, node_states_scalar = outputs
-    
+            # Add print statements to inspect the outputs
+            print("----- Forward Pass Outputs -----")
+            print(f"Outputs type: {type(outputs)}")
+            if isinstance(outputs, tuple):
+                print(f"Number of elements in outputs tuple: {len(outputs)}")
+                for i, item in enumerate(outputs):
+                    print(f"Output element {i}: type={type(item)}, shape={getattr(item, 'shape', 'N/A')}")
+            elif isinstance(outputs, dict):
+                print(f"Outputs keys: {outputs.keys()}")
+                for key, value in outputs.items():
+                    print(f"Output key: {key}, type={type(value)}, shape={getattr(value, 'shape', 'N/A')}")
+            else:
+                print(f"Unexpected outputs structure: {outputs}")
+            print("----- End of Outputs -----\n")
+            
+            # Proceed to unpack
+            try:
+                output_scalar, node_states_scalar = outputs
+                print("Successfully unpacked outputs into output_scalar and node_states_scalar.")
+            except ValueError as e:
+                print(f"Error unpacking outputs: {e}")
+                raise
             # Compute mean and log variance
             mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
     
