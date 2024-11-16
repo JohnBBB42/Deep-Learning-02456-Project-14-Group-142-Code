@@ -247,55 +247,87 @@ class LitPaiNNModel(L.LightningModule):
     def heteroscedastic_loss(self, preds, batch):
         # Get the targets
         targets = batch.energy if self.target_property == "energy" else batch.targets
+        print("Targets:", targets)
+        
         num_nodes = batch.num_nodes.unsqueeze(1)
+        print("Num nodes:", num_nodes)
         
         # Check if nodewise loss should be applied
         nodewise = self.hparams.loss_nodewise
+        print("Nodewise:", nodewise)
         
         # Calculate the heteroscedastic loss for the main target (energy)
         error = (targets - preds[self.target_property]) / num_nodes if nodewise else targets - preds[self.target_property]
+        print("Error:", error)
+        
         log_variance = preds["log_variance"]
+        print("Log variance:", log_variance)
+        
         variance = torch.exp(log_variance)
-    
+        print("Variance:", variance)
+        
         # Regularization term for log_variance
         reg_weight = 1e-1  # Adjust this weight as needed for regularization
         reg_term = reg_weight * (log_variance ** 2).mean()
-    
+        print("Reg term:", reg_term)
+        
         # Clip the variance to avoid extreme values
         variance_clipped = torch.clamp(variance, min=1e-2, max=1.0)  # Adjust min and max as needed
+        print("Variance clipped:", variance_clipped)
         
         # Compute loss components for the energy prediction
         loss_energy = 0.5 * ((error ** 2) / variance_clipped + log_variance).mean() + reg_term
+        print("Loss energy:", loss_energy)
+        
         loss = loss_energy
+        print("Initial loss:", loss)
         
         # Extract batch size
         batch_size = targets.size(0)
+        print("Batch size:", batch_size)
         
         # Log intermediate values with batch_size
         self.log("mse_component", (error ** 2 / variance_clipped).mean(), batch_size=batch_size)
+        print("Logged mse_component.")
+        
         self.log("log_variance_mean", log_variance.mean(), batch_size=batch_size)
+        print("Logged log_variance_mean.")
+        
         self.log("log_variance_std", log_variance.std(), batch_size=batch_size)
+        print("Logged log_variance_std.")
+        
         self.log("variance_clipped_mean", variance_clipped.mean(), batch_size=batch_size)
+        print("Logged variance_clipped_mean.")
         
         # Add forces loss if enabled
         if self.forces:
             forces_error = batch.forces - preds[self.forces_property]
+            print("Forces error:", forces_error)
+            
             if nodewise:
                 forces_loss = self.hparams.loss_forces_weight * F.mse_loss(preds[self.forces_property], batch.forces)
+                print("Nodewise forces loss:", forces_loss)
             else:
                 forces_loss = self.hparams.loss_forces_weight * F.mse_loss(preds[self.forces_property], batch.forces, reduction="sum") / batch.num_data
+                print("Global forces loss:", forces_loss)
             
             # Add the forces loss to the total loss
             loss = (1 - self.hparams.loss_forces_weight) * loss + self.hparams.loss_forces_weight * forces_loss
+            print("Loss after adding forces loss:", loss)
             
             # Log forces loss with batch_size
             self.log("forces_loss", forces_loss, batch_size=batch_size)
+            print("Logged forces_loss.")
         
         # Log total loss components
         self.log("loss_energy", loss_energy, batch_size=batch_size)
+        print("Logged loss_energy.")
+        
         self.log("total_loss", loss, batch_size=batch_size)
+        print("Logged total_loss.")
         
         return loss
+
 
 
 
