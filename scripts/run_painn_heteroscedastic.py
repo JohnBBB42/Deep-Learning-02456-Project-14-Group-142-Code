@@ -476,7 +476,10 @@ class LitPaiNNModel(L.LightningModule):
             raise AttributeError(f"{prefix} Batch {batch_idx} does not have 'node_features' or it is None.")
         # Compute predictions and error
         with torch.enable_grad():  # Enable gradients for computing forces
-            preds = self.forward(batch)
+            preds_tuple = self.forward(batch)
+            preds = preds_tuple[0]  # Extract outputs_dict
+            node_states_scalar = preds_tuple[1]  # Extract node_states_scalar if needed
+        
         targets = batch.energy if self.target_property == "energy" else batch.targets
         error = targets - preds[self.target_property]
         # Initialize evaluation metrics on first step
