@@ -252,14 +252,22 @@ class LitPaiNNModel(L.LightningModule):
         # Check if nodewise loss should be applied
         nodewise = self.hparams.loss_nodewise
         
-        # Calculate the heteroscedastic loss for the main target (energy)
+        print("Calculating error for energy prediction")
         error = (targets - preds[self.target_property]) / num_nodes if nodewise else targets - preds[self.target_property]
+        print("Error stats: ", f"Mean: {error.mean().item()}, Min: {error.min().item()}, Max: {error.max().item()}")
+        
         log_variance = preds["log_variance"]
+        print("Log variance stats: ", f"Mean: {log_variance.mean().item()}, Min: {log_variance.min().item()}, Max: {log_variance.max().item()}")
+        
         variance = torch.exp(log_variance)
+        print("Variance stats after exp: ", f"Mean: {variance.mean().item()}, Min: {variance.min().item()}, Max: {variance.max().item()}")
         
         # Compute loss components for the energy prediction
         loss_energy = 0.5 * ((error ** 2) / variance + log_variance).mean()
+        print("Loss energy: ", f"Value: {loss_energy.item()}")
+        
         loss = loss_energy
+
         
         # Extract batch size
         batch_size = targets.size(0)
@@ -328,20 +336,25 @@ class LitPaiNNModel(L.LightningModule):
             mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
     
             # Apply scaling to mean
+            print("Before scaling, mean stats: ", f"Mean: {mean.mean().item()}, Min: {mean.min().item()}, Max: {mean.max().item()}")
             mean = mean.squeeze(-1) * self._output_scale + self._output_offset
+            print("After scaling, mean stats: ", f"Mean: {mean.mean().item()}, Min: {mean.min().item()}, Max: {mean.max().item()}")
+            
             outputs_dict = {
                 self.target_property: mean,
                 'log_variance': log_variance.squeeze(-1)
             }
-    
+            
             # Compute forces if required
             if self.forces and positions is not None:
                 try:
+                    print("Before computing forces")
                     energy = mean.sum()
                     forces = -torch.autograd.grad(
                         energy, positions, create_graph=self.training, retain_graph=True
                     )[0]
                     outputs_dict[self.forces_property] = forces
+                    print("After computing forces: ", f"Mean force: {forces.mean().item()}, Min: {forces.min().item()}, Max: {forces.max().item()}")
                 except Exception as e:
                     print(f"Error during forces computation: {e}")
                     raise
