@@ -340,7 +340,10 @@ class LitPaiNNModel(L.LightningModule):
         if self.use_sam:
             # First forward-backward pass
             optimizer.zero_grad()
-            preds = self.forward(batch)
+            if self.heteroscedastic:
+                preds, node_states_scalar = self.forward(batch)
+            else:
+                preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
@@ -382,7 +385,10 @@ class LitPaiNNModel(L.LightningModule):
         elif self.use_asam:
             # ASAM optimization
             optimizer.zero_grad()
-            preds = self.forward(batch)
+            if self.heteroscedastic:
+                preds, node_states_scalar = self.forward(batch)
+            else:
+                preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
@@ -433,7 +439,10 @@ class LitPaiNNModel(L.LightningModule):
         else:
             # Regular training step
             # Compute loss
-            preds = self.forward(batch)
+            if self.heteroscedastic:
+                preds, node_states_scalar = self.forward(batch)
+            else:
+                preds = self.forward(batch)
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             self.log("train_loss", loss)
