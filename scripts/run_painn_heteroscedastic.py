@@ -213,11 +213,29 @@ class LitPaiNNModel(L.LightningModule):
         output_keys = [self.target_property]
         if self.heteroscedastic:
             output_keys.append('node_states_scalar')
+        # Before wrapping with DictOutputWrapper
+        print("Before DictOutputWrapper:")
+        print(f"Model type: {type(model)}")
+        print(f"Model architecture:\n{model}\n")
+        
+        # Wrap the model with DictOutputWrapper
         model = atomgnn.models.utils.DictOutputWrapper(
             model,
             #output_keys=[self.target_property],
             output_keys=output_keys,
         )
+        
+        # After wrapping with DictOutputWrapper
+        print("After DictOutputWrapper:")
+        print(f"Model type: {type(model)}")
+        print(f"Model architecture:\n{model}\n")
+        
+        # Before wrapping with ScaleOutputWrapper
+        print("Before ScaleOutputWrapper:")
+        print(f"Model type: {type(model)}")
+        print(f"Model architecture:\n{model}\n")
+        
+        # Wrap the model with ScaleOutputWrapper
         model = atomgnn.models.utils.ScaleOutputWrapper(
             model,
             output_property=self.target_property,
@@ -225,6 +243,18 @@ class LitPaiNNModel(L.LightningModule):
             offset=torch.tensor(_output_offset),
             nodewise=_nodewise_offset,
         )
+        
+        # After wrapping with ScaleOutputWrapper
+        print("After ScaleOutputWrapper:")
+        print(f"Model type: {type(model)}")
+        print(f"Model architecture:\n{model}\n")
+        
+        # Before wrapping with GradOutputWrapper
+        print("Before GradOutputWrapper:")
+        print(f"Model type: {type(model)}")
+        print(f"Model architecture:\n{model}\n")
+        
+        # Wrap the model with GradOutputWrapper
         model = atomgnn.models.utils.GradOutputWrapper(
             model,
             forces=forces,
@@ -233,6 +263,11 @@ class LitPaiNNModel(L.LightningModule):
             forces_property=self.forces_property,
             stress_property=self.stress_property,
         )
+        
+        # After wrapping with GradOutputWrapper
+        print("After GradOutputWrapper:")
+        print(f"Model type: {type(model)}")
+        print(f"Model architecture:\n{model}\n")
         self.model = model
         # Initialize loss function
         if self.heteroscedastic:
