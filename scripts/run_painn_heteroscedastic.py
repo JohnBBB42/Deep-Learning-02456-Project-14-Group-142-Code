@@ -258,11 +258,11 @@ class LitPaiNNModel(L.LightningModule):
         variance = torch.exp(log_variance)
     
         # Regularization term for log_variance
-        reg_weight = 1e-3  # Adjust this weight as needed for regularization
+        reg_weight = 1e-1  # Adjust this weight as needed for regularization
         reg_term = reg_weight * (log_variance ** 2).mean()
     
         # Clip the variance to avoid extreme values
-        variance_clipped = torch.clamp(variance, min=1e-3, max=10.0)  # Adjust min and max as needed
+        variance_clipped = torch.clamp(variance, min=1e-2, max=1.0)  # Adjust min and max as needed
         
         # Compute loss components for the energy prediction
         loss_energy = 0.5 * ((error ** 2) / variance_clipped + log_variance).mean() + reg_term
