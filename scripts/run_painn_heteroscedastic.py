@@ -278,7 +278,13 @@ class LitPaiNNModel(L.LightningModule):
                 positions = getattr(batch, 'pos', None)
             if self.forces and positions is not None:
                 positions.requires_grad_(True)
-    
+            # Get outputs from the model
+            try:
+                outputs = self.model(batch)
+            except Exception as e:
+                print(f"Error during model forward pass: {e}")
+                raise
+        
             # Add print statements to inspect the outputs
             print("----- Forward Pass Outputs -----")
             print(f"Outputs type: {type(outputs)}")
