@@ -217,7 +217,6 @@ class LitPaiNNModel(L.LightningModule):
         # Wrap the model with DictOutputWrapper
         model = atomgnn.models.utils.DictOutputWrapper(
             model,
-            #output_keys=[self.target_property],
             output_keys=output_keys,
         )
         
@@ -261,14 +260,30 @@ class LitPaiNNModel(L.LightningModule):
         error = targets - preds[self.target_property]
         log_variance = preds["log_variance"]
         variance = torch.exp(log_variance)
+        
+        # Compute loss components
         loss_energy = 0.5 * ((error ** 2) / variance + log_variance).mean()
         loss = loss_energy
+        
+        # Log intermediate values
+        self.log("mse_component", (error ** 2 / variance).mean())
+        self.log("log_variance_mean", log_variance.mean())
+        self.log("log_variance_std", log_variance.std())
+        
         if self.forces:
             forces_error = batch.forces - preds[self.forces_property]
             loss_forces = self.hparams.loss_forces_weight * torch.nn.functional.mse_loss(
                 preds[self.forces_property], batch.forces)
             loss += loss_forces
+            
+            # Log forces loss
+            self.log("forces_loss", loss_forces)
+        
+        self.log("loss_energy", loss_energy)
+        self.log("total_loss", loss)
+        
         return loss
+
 
 
     def forward(self, batch):
@@ -331,9 +346,6 @@ class LitPaiNNModel(L.LightningModule):
             outputs_dict = self.model(batch)
     
         return outputs_dict
-
-    #def forward(self, batch):
-        #return self.model(batch)
 
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
