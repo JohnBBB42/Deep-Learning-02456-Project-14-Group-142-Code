@@ -265,10 +265,13 @@ class LitPaiNNModel(L.LightningModule):
         loss_energy = 0.5 * ((error ** 2) / variance + log_variance).mean()
         loss = loss_energy
         
-        # Log intermediate values
-        self.log("mse_component", (error ** 2 / variance).mean())
-        self.log("log_variance_mean", log_variance.mean())
-        self.log("log_variance_std", log_variance.std())
+        # Extract batch size
+        batch_size = targets.size(0)
+        
+        # Log intermediate values with batch_size
+        self.log("mse_component", (error ** 2 / variance).mean(), batch_size=batch_size)
+        self.log("log_variance_mean", log_variance.mean(), batch_size=batch_size)
+        self.log("log_variance_std", log_variance.std(), batch_size=batch_size)
         
         if self.forces:
             forces_error = batch.forces - preds[self.forces_property]
@@ -276,11 +279,12 @@ class LitPaiNNModel(L.LightningModule):
                 preds[self.forces_property], batch.forces)
             loss += loss_forces
             
-            # Log forces loss
-            self.log("forces_loss", loss_forces)
+            # Log forces loss with batch_size
+            self.log("forces_loss", loss_forces, batch_size=batch_size)
         
-        self.log("loss_energy", loss_energy)
-        self.log("total_loss", loss)
+        # Log total loss components
+        self.log("loss_energy", loss_energy, batch_size=batch_size)
+        self.log("total_loss", loss, batch_size=batch_size)
         
         return loss
 
