@@ -284,30 +284,26 @@ class LitPaiNNModel(L.LightningModule):
             except Exception as e:
                 print(f"Error during model forward pass: {e}")
                 raise
-        
-            # Add print statements to inspect the outputs
+    
+            # Inspect the outputs
             print("----- Forward Pass Outputs -----")
             print(f"Outputs type: {type(outputs)}")
-            if isinstance(outputs, tuple):
-                print(f"Number of elements in outputs tuple: {len(outputs)}")
-                for i, item in enumerate(outputs):
-                    print(f"Output element {i}: type={type(item)}, shape={getattr(item, 'shape', 'N/A')}")
-            elif isinstance(outputs, dict):
-                print(f"Outputs keys: {outputs.keys()}")
-                for key, value in outputs.items():
-                    print(f"Output key: {key}, type={type(value)}, shape={getattr(value, 'shape', 'N/A')}")
-            else:
-                print(f"Unexpected outputs structure: {outputs}")
+            print(f"Outputs keys: {outputs.keys()}")
+            for key, value in outputs.items():
+                print(f"Output key: {key}, type={type(value)}, shape={getattr(value, 'shape', 'N/A')}")
             print("----- End of Outputs -----\n")
-            
-            # Proceed to unpack
+    
+            # Access outputs by keys instead of unpacking
             try:
-                output_scalar, node_states_scalar = outputs
-                print("Successfully unpacked outputs into output_scalar and node_states_scalar.")
-            except ValueError as e:
-                print(f"Error unpacking outputs: {e}")
+                output_scalar = outputs['U0']
+                node_states_scalar = outputs['node_states_scalar']
+                # Optionally, access 'forces' if needed
+                forces = outputs.get('forces', None)
+                print("Successfully extracted 'U0' and 'node_states_scalar' from outputs.")
+            except KeyError as e:
+                print(f"Missing expected key in outputs: {e}")
                 raise
-            # Compute mean and log variance
+            # Continue with the rest of the forward method...
             mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
     
             # Apply scaling to mean
@@ -319,11 +315,17 @@ class LitPaiNNModel(L.LightningModule):
     
             # Compute forces if required
             if self.forces and positions is not None:
-                energy = mean.sum()
-                forces = -torch.autograd.grad(
-                    energy, positions, create_graph=self.training, retain_graph=True
-                )[0]
-                outputs_dict[self.forces_property] = forces
+                try:
+                    energy = mean.sum()
+                    forces = -torch.autograd.grad(
+                        energy, positions, create_graph=self.training, retain_graph=True
+                    )[0]
+                    outputs_dict[self.forces_property] = forces
+                except Exception as e:
+                    print(f"Error during forces computation: {e}")
+                    raise
+    
+            return outputs_dict, node_states_scalar
         else:
             # Handle non-heteroscedastic model case
             outputs_dict = self.model(batch)
