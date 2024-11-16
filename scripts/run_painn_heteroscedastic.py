@@ -252,30 +252,30 @@ class LitPaiNNModel(L.LightningModule):
         # Check if nodewise loss should be applied
         nodewise = self.hparams.loss_nodewise
         
-        print("Calculating error for energy prediction")
+        # Calculate the heteroscedastic loss for the main target (energy)
         error = (targets - preds[self.target_property]) / num_nodes if nodewise else targets - preds[self.target_property]
-        print("Error stats: ", f"Mean: {error.mean().item()}, Min: {error.min().item()}, Max: {error.max().item()}")
-        
         log_variance = preds["log_variance"]
-        print("Log variance stats: ", f"Mean: {log_variance.mean().item()}, Min: {log_variance.min().item()}, Max: {log_variance.max().item()}")
-        
         variance = torch.exp(log_variance)
-        print("Variance stats after exp: ", f"Mean: {variance.mean().item()}, Min: {variance.min().item()}, Max: {variance.max().item()}")
+    
+        # Regularization term for log_variance
+        reg_weight = 1e-3  # Adjust this weight as needed for regularization
+        reg_term = reg_weight * (log_variance ** 2).mean()
+    
+        # Clip the variance to avoid extreme values
+        variance_clipped = torch.clamp(variance, min=1e-3, max=10.0)  # Adjust min and max as needed
         
         # Compute loss components for the energy prediction
-        loss_energy = 0.5 * ((error ** 2) / variance + log_variance).mean()
-        print("Loss energy: ", f"Value: {loss_energy.item()}")
-        
+        loss_energy = 0.5 * ((error ** 2) / variance_clipped + log_variance).mean() + reg_term
         loss = loss_energy
-
         
         # Extract batch size
         batch_size = targets.size(0)
         
         # Log intermediate values with batch_size
-        self.log("mse_component", (error ** 2 / variance).mean(), batch_size=batch_size)
+        self.log("mse_component", (error ** 2 / variance_clipped).mean(), batch_size=batch_size)
         self.log("log_variance_mean", log_variance.mean(), batch_size=batch_size)
         self.log("log_variance_std", log_variance.std(), batch_size=batch_size)
+        self.log("variance_clipped_mean", variance_clipped.mean(), batch_size=batch_size)
         
         # Add forces loss if enabled
         if self.forces:
@@ -296,6 +296,7 @@ class LitPaiNNModel(L.LightningModule):
         self.log("total_loss", loss, batch_size=batch_size)
         
         return loss
+
 
 
 
