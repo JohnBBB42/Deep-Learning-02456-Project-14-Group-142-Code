@@ -273,9 +273,9 @@ class LitPaiNNModel(L.LightningModule):
         if self.forces:
             forces_error = batch.forces - preds[self.forces_property]
             if nodewise:
-                forces_loss = self.hparams.loss_forces_weight * mse_loss(preds[self.forces_property], batch.forces)
+                forces_loss = self.hparams.loss_forces_weight * F.mse_loss(preds[self.forces_property], batch.forces)
             else:
-                forces_loss = self.hparams.loss_forces_weight * mse_loss(preds[self.forces_property], batch.forces, reduction="sum") / batch.num_data
+                forces_loss = self.hparams.loss_forces_weight * F.mse_loss(preds[self.forces_property], batch.forces, reduction="sum") / batch.num_data
             
             # Add the forces loss to the total loss
             loss = (1 - self.hparams.loss_forces_weight) * loss + self.hparams.loss_forces_weight * forces_loss
