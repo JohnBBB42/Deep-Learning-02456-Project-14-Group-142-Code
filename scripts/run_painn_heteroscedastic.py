@@ -245,12 +245,16 @@ class LitPaiNNModel(L.LightningModule):
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
     def heteroscedastic_loss(self, preds, batch):
+        # Get the targets
         targets = batch.energy if self.target_property == "energy" else batch.targets
-        error = targets - preds[self.target_property]
+        num_nodes = batch.num_nodes.unsqueeze(1)
+    
+        # Calculate the heteroscedastic loss for the main target (energy)
+        error = (targets - preds[self.target_property]) / num_nodes if self.nodewise else targets - preds[self.target_property]
         log_variance = preds["log_variance"]
         variance = torch.exp(log_variance)
         
-        # Compute loss components
+        # Compute loss components for the energy prediction
         loss_energy = 0.5 * ((error ** 2) / variance + log_variance).mean()
         loss = loss_energy
         
@@ -262,20 +266,26 @@ class LitPaiNNModel(L.LightningModule):
         self.log("log_variance_mean", log_variance.mean(), batch_size=batch_size)
         self.log("log_variance_std", log_variance.std(), batch_size=batch_size)
         
+        # Add forces loss if enabled
         if self.forces:
             forces_error = batch.forces - preds[self.forces_property]
-            loss_forces = self.hparams.loss_forces_weight * torch.nn.functional.mse_loss(
-                preds[self.forces_property], batch.forces)
-            loss += loss_forces
+            if self.nodewise:
+                forces_loss = self.hparams.loss_forces_weight * mse_loss(preds[self.forces_property], batch.forces)
+            else:
+                forces_loss = self.hparams.loss_forces_weight * mse_loss(preds[self.forces_property], batch.forces, reduction="sum") / batch.num_data
+            
+            # Add the forces loss to the total loss
+            loss = (1 - self.hparams.loss_forces_weight) * loss + self.hparams.loss_forces_weight * forces_loss
             
             # Log forces loss with batch_size
-            self.log("forces_loss", loss_forces, batch_size=batch_size)
+            self.log("forces_loss", forces_loss, batch_size=batch_size)
         
         # Log total loss components
         self.log("loss_energy", loss_energy, batch_size=batch_size)
         self.log("total_loss", loss, batch_size=batch_size)
         
         return loss
+
 
 
 
