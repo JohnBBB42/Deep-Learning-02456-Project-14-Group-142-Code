@@ -2,8 +2,8 @@
 
 import lightning as L
 import torch
-from torch.nn import functional as F
-from torch.nn import Module
+import torch.nn.functional as F
+from torch.nn import GaussianNLLLoss
 
 import _atomgnn  # noqa: F401
 import atomgnn.models.painn
@@ -12,88 +12,6 @@ import atomgnn.models.utils
 
 from pathlib import Path
 from run_atoms import configure_cli, run
-
-class HeteroscedasticLoss(Module):
-    """Heteroscedastic loss function with support for target properties, forces, and stress."""
-
-    def __init__(
-        self,
-        target_property: str = "",
-        forces: bool = False,
-        forces_property: str = "forces",
-        forces_weight: float = 0.5,
-        stress: bool = False,
-        stress_weight: float = 0.1,
-        nodewise: bool = False,
-        reg_weight: float = 1e-2,  # Regularization weight for log-variance
-        **kwargs  # Ignore additional arguments
-    ) -> None:
-        """Initialize the loss function.
-
-        Args:
-            target_property: The target property in the dataset (use energy if falsy).
-            forces: Include forces in the loss.
-            forces_property: The forces property in the predictions.
-            forces_weight: Trade-off between target and forces in the loss function (0.0 to 1.0).
-            stress: Include stress in the loss.
-            stress_weight: Weight of stress in the loss.
-            nodewise: Use nodewise loss instead of global loss.
-            reg_weight: Regularization weight for log-variance.
-        """
-        super().__init__()
-        assert 0.0 <= forces_weight <= 1.0, "forces_weight must be between 0 and 1."
-        self.target_property = target_property or "energy"  # Use "energy" if target_property is falsy
-        self.forces = forces
-        self.forces_property = forces_property
-        self.forces_weight = forces_weight
-        self.stress = stress
-        self.stress_weight = stress_weight
-        self.nodewise = nodewise
-        self.reg_weight = reg_weight
-
-    def _heteroscedastic_loss(self, preds: dict, batch) -> torch.Tensor:
-        targets = batch.energy if self.target_property == "energy" else batch.targets
-        num_nodes = batch.num_nodes.unsqueeze(1)
-
-        mean = preds[self.target_property]
-        log_variance = preds.get("log_variance", torch.zeros_like(mean))  # Default if log_variance is missing
-        variance = torch.exp(log_variance)
-        
-        # Ensure variance is positive and numerically stable
-        variance = torch.clamp(variance, min=1e-6)
-
-        # Calculate heteroscedastic loss
-        error = (targets - mean) / num_nodes if self.nodewise else targets - mean
-        loss = 0.5 * ((error ** 2) / variance + log_variance).mean()
-        
-        # Add regularization term for stability
-        reg_term = self.reg_weight * (log_variance ** 2).mean()
-        loss += reg_term
-
-        return loss
-
-    def forward(self, preds: dict, batch) -> torch.Tensor:
-        """Compute the heteroscedastic loss.
-
-        Args:
-            preds: Dictionary of predictions including mean and log-variance.
-            batch: Batch of data.
-        Returns:
-            The computed loss.
-        """
-        loss = self._heteroscedastic_loss(preds, batch)
-
-        if self.forces:
-            forces_error = F.mse_loss(preds[self.forces_property], batch.forces)
-            loss = (1 - self.forces_weight) * loss + self.forces_weight * forces_error
-
-        if self.stress:
-            stress_loss = F.mse_loss(preds["stress"], batch.stress)
-            loss += self.stress_weight * stress_loss
-
-        return loss
-
-
 
 class LitPaiNNModel(L.LightningModule):
     """PaiNN model."""
@@ -191,16 +109,8 @@ class LitPaiNNModel(L.LightningModule):
         )
         self.model = model
         # Initialize the appropriate loss function
-        if heteroscedastic:
-            self.loss_function = HeteroscedasticLoss(
-                target_property=self.target_property,
-                forces=forces,
-                forces_property=self.forces_property,
-                forces_weight=loss_forces_weight,
-                stress=stress,
-                stress_weight=loss_stress_weight,
-                nodewise=loss_nodewise,
-            )
+        if self.heteroscedastic:
+            self.loss_function = GaussianNLLLoss(reduction='mean')
         else:
             self.loss_function = atomgnn.models.loss.MSELoss(
                 target_property=self.target_property,
@@ -222,7 +132,12 @@ class LitPaiNNModel(L.LightningModule):
             # First forward-backward pass
             optimizer.zero_grad()
             preds = self.forward(batch)
-            loss = self.loss_function(preds, batch)
+            if self.heteroscedastic:
+                mean = preds['mean']  # Ensure your model outputs 'mean' and 'variance'
+                variance = preds['variance']
+                loss = self.loss_function(mean, targets, variance)
+            else:
+                loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
             # Compute gradient norm
             grad_norm = torch.norm(
@@ -264,7 +179,12 @@ class LitPaiNNModel(L.LightningModule):
             # ASAM optimization
             optimizer.zero_grad()
             preds = self.forward(batch)
-            loss = self.loss_function(preds, batch)
+            if self.heteroscedastic:
+                mean = preds['mean']  # Ensure your model outputs 'mean' and 'variance'
+                variance = preds['variance']
+                loss = self.loss_function(mean, targets, variance)
+            else:
+                loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
             # Compute parameter norms and scaled gradients
             with torch.no_grad():
@@ -315,7 +235,12 @@ class LitPaiNNModel(L.LightningModule):
             # Regular training step
             # Compute loss
             preds = self.forward(batch)
-            loss = self.loss_function(preds, batch)
+            if self.heteroscedastic:
+                mean = preds['mean']  # Ensure your model outputs 'mean' and 'variance'
+                variance = preds['variance']
+                loss = self.loss_function(mean, targets, variance)
+            else:
+                loss = self.loss_function(preds, batch)
             self.log("train_loss", loss)
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
