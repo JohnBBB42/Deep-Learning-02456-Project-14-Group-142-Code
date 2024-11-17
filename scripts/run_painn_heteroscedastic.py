@@ -247,92 +247,37 @@ class LitPaiNNModel(L.LightningModule):
     def heteroscedastic_loss(self, preds, batch):
         # Get the targets
         targets = batch.energy if self.target_property == "energy" else batch.targets
-        print("Targets:", targets)
         
         num_nodes = batch.num_nodes.unsqueeze(1)
-        print("Num nodes:", num_nodes)
         
         # Check if nodewise loss should be applied
         nodewise = self.hparams.loss_nodewise
-        print("Nodewise:", nodewise)
         
         # Calculate the heteroscedastic loss for the main target (energy)
         error = (targets - preds[self.target_property]) / num_nodes if nodewise else targets - preds[self.target_property]
-        print("Error:", error)
-        
         log_variance = preds["log_variance"]
-        print("Log variance:", log_variance)
         
+        # Clamp log_variance to prevent numerical issues
+        log_variance = torch.clamp(log_variance, min=-10, max=5)
         variance = torch.exp(log_variance)
-        print("Variance:", variance)
         
         # Regularization term for log_variance
-        reg_weight = 1e-1  # Adjust this weight as needed for regularization
+        reg_weight = 1e-2  # Adjust this weight as needed for regularization
         reg_term = reg_weight * (log_variance ** 2).mean()
-        print("Reg term:", reg_term)
-        
-        # Clip the variance to avoid extreme values
-        variance_clipped = torch.clamp(variance, min=1e-2, max=1.0)  # Adjust min and max as needed
-        print("Variance clipped:", variance_clipped)
         
         # Compute loss components for the energy prediction
-        loss_energy = 0.5 * ((error ** 2) / variance_clipped + log_variance).mean() + reg_term
-        print("Loss energy:", loss_energy)
-        
+        loss_energy = 0.5 * ((error ** 2) / (variance + 1e-6) + log_variance).mean() + reg_term
         loss = loss_energy
-        print("Initial loss:", loss)
         
-        # Extract batch size
+        # Log values for debugging
         batch_size = targets.size(0)
-        print("Batch size:", batch_size)
-        
-        # Log intermediate values with batch_size
-        self.log("mse_component", (error ** 2 / variance_clipped).mean(), batch_size=batch_size)
-        print("Logged mse_component.")
-        
+        self.log("mse_component", (error ** 2 / (variance + 1e-6)).mean(), batch_size=batch_size)
         self.log("log_variance_mean", log_variance.mean(), batch_size=batch_size)
-        print("Logged log_variance_mean.")
-        
         self.log("log_variance_std", log_variance.std(), batch_size=batch_size)
-        print("Logged log_variance_std.")
-        
-        self.log("variance_clipped_mean", variance_clipped.mean(), batch_size=batch_size)
-        print("Logged variance_clipped_mean.")
-        
-        # Add forces loss if enabled
-        if self.forces:
-            forces_error = batch.forces - preds[self.forces_property]
-            print("Forces error:", forces_error)
-            
-            if nodewise:
-                forces_loss = self.hparams.loss_forces_weight * F.mse_loss(preds[self.forces_property], batch.forces)
-                print("Nodewise forces loss:", forces_loss)
-            else:
-                forces_loss = self.hparams.loss_forces_weight * F.mse_loss(preds[self.forces_property], batch.forces, reduction="sum") / batch.num_data
-                print("Global forces loss:", forces_loss)
-            
-            # Add the forces loss to the total loss
-            loss = (1 - self.hparams.loss_forces_weight) * loss + self.hparams.loss_forces_weight * forces_loss
-            print("Loss after adding forces loss:", loss)
-            
-            # Log forces loss with batch_size
-            self.log("forces_loss", forces_loss, batch_size=batch_size)
-            print("Logged forces_loss.")
-        
-        # Log total loss components
-        self.log("loss_energy", loss_energy, batch_size=batch_size)
-        print("Logged loss_energy.")
-        
-        self.log("total_loss", loss, batch_size=batch_size)
-        print("Logged total_loss.")
+        self.log("variance_clipped_mean", variance.mean(), batch_size=batch_size)
         
         return loss
-
-
-
-
-
-
+      
     def forward(self, batch):
         if self.heteroscedastic:
             positions = getattr(batch, 'node_positions', None)
@@ -411,6 +356,8 @@ class LitPaiNNModel(L.LightningModule):
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
+            if self.heteroscedastic:
+                  torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
             # Compute gradient norm
             grad_norm = torch.norm(
                 torch.stack([
@@ -456,6 +403,9 @@ class LitPaiNNModel(L.LightningModule):
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
+            # Clip gradients to prevent exploding gradients
+            if self.heteroscedastic:
+                torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
             # Compute parameter norms and scaled gradients
             with torch.no_grad():
                 param_norms = []
@@ -510,6 +460,8 @@ class LitPaiNNModel(L.LightningModule):
             targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             self.log("train_loss", loss)
+            if self.heteroscedastic:
+                torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
@@ -703,11 +655,14 @@ class HeteroscedasticReadout(torch.nn.Module):
         self.log_variance_layer = torch.nn.Linear(input_size, 1)
 
     def forward(self, x, batch):
-        # x: node embeddings, batch: batch indices for nodes
         # Aggregate node embeddings to graph-level embeddings
         graph_embeddings = scatter(x, batch, dim=0, reduce=self.reduction)
         mean = self.mean_layer(graph_embeddings)
+        
+        # Clamp log_variance to prevent it from exploding
         log_variance = self.log_variance_layer(graph_embeddings)
+        log_variance = torch.clamp(log_variance, min=-10, max=5)  # Adjust bounds as needed
+        
         return mean, log_variance
 
 
