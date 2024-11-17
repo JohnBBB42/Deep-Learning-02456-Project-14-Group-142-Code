@@ -170,9 +170,9 @@ class LitPaiNNModel(L.LightningModule):
             pbc=pbc,
             readout_reduction=readout_reduction,
         )
-         model = atomgnn.models.utils.DictOutputWrapper(
-            model,
-            output_keys=[self.target_property, 'log_variance'] if heteroscedastic else [self.target_property],
+        model = atomgnn.models.utils.DictOutputWrapper(
+           model,
+           output_keys=[self.target_property, 'log_variance'] if heteroscedastic else [self.target_property],
         )
         model = atomgnn.models.utils.ScaleOutputWrapper(
             model,
