@@ -88,12 +88,16 @@ class LitPaiNNModel(L.LightningModule):
             pbc=pbc,
             readout_reduction=readout_reduction,
         )
-        output_keys = [self.target_property]
+        output_keys = [self.target_property]  # By default, this would be "energy" or another target.
+        
+        # Adjust output keys for heteroscedastic output
         if self.heteroscedastic:
-            output_keys.extend(['mean', 'variance'])
+            output_keys = ['mean', 'variance']  # Set output keys to match the tuple output.
+        
+        # Wrap the model with DictOutputWrapper
         model = atomgnn.models.utils.DictOutputWrapper(
-           model,
-           output_keys=output_keys,
+            model,
+            output_keys=output_keys,
         )
         model = atomgnn.models.utils.ScaleOutputWrapper(
             model,
@@ -129,9 +133,11 @@ class LitPaiNNModel(L.LightningModule):
     def forward(self, batch):
         outputs = self.model(batch)
         if self.heteroscedastic:
-            mean = outputs['mean']
-            variance = outputs['variance']
-            return {'mean': mean, 'variance': variance}
+            # Your existing logic to compute mean and variance
+            mean, variance = self.model(batch)
+            
+            # Return them as a tuple
+            return (mean, variance)
         else:
             return outputs
 
