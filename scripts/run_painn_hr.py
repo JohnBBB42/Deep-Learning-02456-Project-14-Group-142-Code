@@ -88,9 +88,12 @@ class LitPaiNNModel(L.LightningModule):
             pbc=pbc,
             readout_reduction=readout_reduction,
         )
+        output_keys = [self.target_property]
+        if self.heteroscedastic:
+            output_keys.extend(['mean', 'variance'])
         model = atomgnn.models.utils.DictOutputWrapper(
            model,
-           output_keys=[self.target_property, 'log_variance'] if heteroscedastic else [self.target_property],
+           output_keys=output_keys,
         )
         model = atomgnn.models.utils.ScaleOutputWrapper(
             model,
@@ -124,7 +127,13 @@ class LitPaiNNModel(L.LightningModule):
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
     def forward(self, batch):
-        return self.model(batch)
+        outputs = self.model(batch)
+        if self.heteroscedastic:
+            mean = outputs['mean']
+            variance = outputs['variance']
+            return {'mean': mean, 'variance': variance}
+        else:
+            return outputs
 
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
