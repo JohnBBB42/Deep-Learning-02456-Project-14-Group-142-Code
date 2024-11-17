@@ -2,6 +2,8 @@
 
 import lightning as L
 import torch
+from torch.nn import functional as F
+from torch.nn import Module
 
 import _atomgnn  # noqa: F401
 import atomgnn.models.painn
@@ -10,6 +12,87 @@ import atomgnn.models.utils
 
 from pathlib import Path
 from run_atoms import configure_cli, run
+
+class HeteroscedasticLoss(Module):
+    """Heteroscedastic loss function with support for target properties, forces, and stress."""
+
+    def __init__(
+        self,
+        target_property: str = "",
+        forces: bool = False,
+        forces_property: str = "forces",
+        forces_weight: float = 0.5,
+        stress: bool = False,
+        stress_weight: float = 0.1,
+        nodewise: bool = False,
+        reg_weight: float = 1e-2,  # Regularization weight for log-variance
+        **kwargs  # Ignore additional arguments
+    ) -> None:
+        """Initialize the loss function.
+
+        Args:
+            target_property: The target property in the dataset (use energy if falsy).
+            forces: Include forces in the loss.
+            forces_property: The forces property in the predictions.
+            forces_weight: Trade-off between target and forces in the loss function (0.0 to 1.0).
+            stress: Include stress in the loss.
+            stress_weight: Weight of stress in the loss.
+            nodewise: Use nodewise loss instead of global loss.
+            reg_weight: Regularization weight for log-variance.
+        """
+        super().__init__()
+        assert 0.0 <= forces_weight <= 1.0, "forces_weight must be between 0 and 1."
+        self.target_property = target_property or "energy"  # Use "energy" if target_property is falsy
+        self.forces = forces
+        self.forces_property = forces_property
+        self.forces_weight = forces_weight
+        self.stress = stress
+        self.stress_weight = stress_weight
+        self.nodewise = nodewise
+        self.reg_weight = reg_weight
+
+    def _heteroscedastic_loss(self, preds: dict, batch) -> torch.Tensor:
+        targets = batch.energy if self.target_property == "energy" else batch.targets
+        num_nodes = batch.num_nodes.unsqueeze(1)
+
+        mean = preds[self.target_property]
+        log_variance = preds.get("log_variance", torch.zeros_like(mean))  # Default if log_variance is missing
+        variance = torch.exp(log_variance)
+        
+        # Ensure variance is positive and numerically stable
+        variance = torch.clamp(variance, min=1e-6)
+
+        # Calculate heteroscedastic loss
+        error = (targets - mean) / num_nodes if self.nodewise else targets - mean
+        loss = 0.5 * ((error ** 2) / variance + log_variance).mean()
+        
+        # Add regularization term for stability
+        reg_term = self.reg_weight * (log_variance ** 2).mean()
+        loss += reg_term
+
+        return loss
+
+    def forward(self, preds: dict, batch) -> torch.Tensor:
+        """Compute the heteroscedastic loss.
+
+        Args:
+            preds: Dictionary of predictions including mean and log-variance.
+            batch: Batch of data.
+        Returns:
+            The computed loss.
+        """
+        loss = self._heteroscedastic_loss(preds, batch)
+
+        if self.forces:
+            forces_error = F.mse_loss(preds[self.forces_property], batch.forces)
+            loss = (1 - self.forces_weight) * loss + self.forces_weight * forces_error
+
+        if self.stress:
+            stress_loss = F.mse_loss(preds["stress"], batch.stress)
+            loss += self.stress_weight * stress_loss
+
+        return loss
+
 
 
 class LitPaiNNModel(L.LightningModule):
@@ -35,6 +118,7 @@ class LitPaiNNModel(L.LightningModule):
         use_sam: bool = False,  # Add SAM
         use_asam: bool = False, # Add ASAM
         sam_rho: float = 0.05,
+        heteroscedastic: bool = False,
         # Underscores hide these arguments from the CLI
         _output_scale: float = 1.0,
         _output_offset: float = 0.0,
@@ -69,9 +153,10 @@ class LitPaiNNModel(L.LightningModule):
         self.forces = forces
         self.stress = stress
         self.init_lr = init_lr
-        self.use_sam = use_sam  # Save use_sam as an instance variable
+        self.use_sam = use_sam
         self.use_asam = use_asam
-        self.sam_rho = sam_rho  # Add this line
+        self.sam_rho = sam_rho
+        self.heteroscedastic = heteroscedastic
         if self.use_sam and self.use_asam:
             raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
         if self.use_sam or self.use_asam:
@@ -85,9 +170,9 @@ class LitPaiNNModel(L.LightningModule):
             pbc=pbc,
             readout_reduction=readout_reduction,
         )
-        model = atomgnn.models.utils.DictOutputWrapper(
+         model = atomgnn.models.utils.DictOutputWrapper(
             model,
-            output_keys=[self.target_property],
+            output_keys=[self.target_property, 'log_variance'] if heteroscedastic else [self.target_property],
         )
         model = atomgnn.models.utils.ScaleOutputWrapper(
             model,
@@ -105,16 +190,28 @@ class LitPaiNNModel(L.LightningModule):
             stress_property=self.stress_property,
         )
         self.model = model
-        # Initialize loss function
-        self.loss_function = atomgnn.models.loss.MSELoss(
-            target_property=self.target_property,
-            forces=forces,
-            forces_property=self.forces_property,
-            forces_weight=loss_forces_weight,
-            stress=stress,
-            stress_weight=loss_stress_weight,
-            nodewise=loss_nodewise,
-        )
+        # Initialize the appropriate loss function
+        if heteroscedastic:
+            from your_module_path import HeteroscedasticLoss  # Ensure correct import path
+            self.loss_function = HeteroscedasticLoss(
+                target_property=self.target_property,
+                forces=forces,
+                forces_property=self.forces_property,
+                forces_weight=loss_forces_weight,
+                stress=stress,
+                stress_weight=loss_stress_weight,
+                nodewise=loss_nodewise,
+            )
+        else:
+            self.loss_function = atomgnn.models.loss.MSELoss(
+                target_property=self.target_property,
+                forces=forces,
+                forces_property=self.forces_property,
+                forces_weight=loss_forces_weight,
+                stress=stress,
+                stress_weight=loss_stress_weight,
+                nodewise=loss_nodewise,
+            )
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
     def forward(self, batch):
@@ -413,6 +510,9 @@ def main():
     cli.link_arguments("use_sam", "model.use_sam", apply_on="parse")
     cli.link_arguments("use_asam", "model.use_asam", apply_on="parse")
     cli.link_arguments("sam_rho", "model.sam_rho", apply_on="parse")
+    # Link heteroscedastic argument
+    cli.link_arguments("heteroscedastic", "model.heteroscedastic", apply_on="parse")
+  
 
     # Run the script
     cfg = cli.parse_args()
