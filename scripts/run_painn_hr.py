@@ -192,7 +192,6 @@ class LitPaiNNModel(L.LightningModule):
         self.model = model
         # Initialize the appropriate loss function
         if heteroscedastic:
-            from your_module_path import HeteroscedasticLoss  # Ensure correct import path
             self.loss_function = HeteroscedasticLoss(
                 target_property=self.target_property,
                 forces=forces,
