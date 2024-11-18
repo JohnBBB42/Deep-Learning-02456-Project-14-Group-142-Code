@@ -105,6 +105,16 @@ class LitPaiNNModel(L.LightningModule):
             stress_weight=loss_stress_weight,
             nodewise=loss_nodewise,
         )
+        self.loss_function = atomgnn.models.loss.GaussianNLLLoss(
+            target_property=self.target_property,
+            variance=loss_variance,
+            forces=forces,
+            forces_property=self.forces_property,
+            forces_weight=loss_forces_weight,
+            stress=stress,
+            stress_weight=loss_stress_weight,
+            nodewise=loss_nodewise,
+        )
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
     def forward(self, batch):
