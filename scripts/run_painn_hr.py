@@ -2,16 +2,14 @@
 
 import lightning as L
 import torch
-import torch.nn.functional as F
-from torch.nn import GaussianNLLLoss
 
 import _atomgnn  # noqa: F401
 import atomgnn.models.painn
 import atomgnn.models.loss
 import atomgnn.models.utils
 
-from pathlib import Path
 from run_atoms import configure_cli, run
+
 
 class LitPaiNNModel(L.LightningModule):
     """PaiNN model."""
@@ -33,10 +31,6 @@ class LitPaiNNModel(L.LightningModule):
         loss_nodewise: bool = False,
         # Optimizer
         init_lr: float = 1e-4,
-        use_sam: bool = False,  # Add SAM
-        use_asam: bool = False, # Add ASAM
-        sam_rho: float = 0.05,
-        heteroscedastic: bool = False,
         # Underscores hide these arguments from the CLI
         _output_scale: float = 1.0,
         _output_offset: float = 0.0,
@@ -71,14 +65,6 @@ class LitPaiNNModel(L.LightningModule):
         self.forces = forces
         self.stress = stress
         self.init_lr = init_lr
-        self.use_sam = use_sam
-        self.use_asam = use_asam
-        self.sam_rho = sam_rho
-        self.heteroscedastic = heteroscedastic
-        if self.use_sam and self.use_asam:
-            raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
-        if self.use_sam or self.use_asam:
-            self.automatic_optimization = False  # Disable automatic optimization when using SAM
         # Initialize model
         model: torch.nn.Module = atomgnn.models.painn.PaiNN(
             node_size=node_size,
@@ -87,17 +73,11 @@ class LitPaiNNModel(L.LightningModule):
             cutoff=cutoff,
             pbc=pbc,
             readout_reduction=readout_reduction,
+            readout_size=2,
         )
-        output_keys = [self.target_property]  # By default, this would be "energy" or another target.
-        
-        # Adjust output keys for heteroscedastic output
-        if self.heteroscedastic:
-            output_keys = ['mean', 'variance']  # Set output keys to match the tuple output.
-        
-        # Wrap the model with DictOutputWrapper
         model = atomgnn.models.utils.DictOutputWrapper(
             model,
-            output_keys=output_keys,
+            output_keys=[self.target_property],
         )
         model = atomgnn.models.utils.ScaleOutputWrapper(
             model,
@@ -115,161 +95,30 @@ class LitPaiNNModel(L.LightningModule):
             stress_property=self.stress_property,
         )
         self.model = model
-        # Initialize the appropriate loss function
-        if self.heteroscedastic:
-            self.loss_function = GaussianNLLLoss(reduction='mean')
-        else:
-            self.loss_function = atomgnn.models.loss.MSELoss(
-                target_property=self.target_property,
-                forces=forces,
-                forces_property=self.forces_property,
-                forces_weight=loss_forces_weight,
-                stress=stress,
-                stress_weight=loss_stress_weight,
-                nodewise=loss_nodewise,
-            )
+        # Initialize loss function
+        self.loss_function = atomgnn.models.loss.MSELoss(
+            target_property=self.target_property,
+            forces=forces,
+            forces_property=self.forces_property,
+            forces_weight=loss_forces_weight,
+            stress=stress,
+            stress_weight=loss_stress_weight,
+            nodewise=loss_nodewise,
+        )
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
     def forward(self, batch):
-        outputs = self.model(batch)
-        if self.heteroscedastic:
-            # Your existing logic to compute mean and variance
-            mean, variance = self.model(batch)
-            
-            # Return them as a tuple
-            return (mean, variance)
-        else:
-            return outputs
+        return self.model(batch)
 
     def training_step(self, batch, batch_idx):
-        optimizer = self.optimizers()
-        if self.use_sam:
-            # First forward-backward pass
-            optimizer.zero_grad()
-            preds = self.forward(batch)
-            if self.heteroscedastic:
-                mean = preds['mean']  # Ensure your model outputs 'mean' and 'variance'
-                variance = preds['variance']
-                loss = self.loss_function(mean, targets, variance)
-            else:
-                loss = self.loss_function(preds, batch)
-            self.manual_backward(loss)
-            # Compute gradient norm
-            grad_norm = torch.norm(
-                torch.stack([
-                    p.grad.detach().norm(2)
-                    for p in self.parameters()
-                    if p.grad is not None
-                ])
-            )
-            # Log grad_norm
-            self.log('grad_norm', grad_norm)
-            # Perturb parameters
-            with torch.no_grad():
-                for p in self.parameters():
-                    if p.grad is None:
-                        continue
-                    e_w = p.grad / (grad_norm + 1e-12) * self.sam_rho
-                    p.add_(e_w)
-            # Second forward-backward pass
-            optimizer.zero_grad()
-            preds_adv = self.forward(batch)
-            loss_adv = self.loss_function(preds_adv, batch)
-            self.manual_backward(loss_adv)
-            # Restore original parameters
-            with torch.no_grad():
-                for p in self.parameters():
-                    if p.grad is None:
-                        continue
-                    e_w = p.grad / (grad_norm + 1e-12) * self.sam_rho
-                    p.sub_(e_w)
-            # Update parameters
-            optimizer.step()
-            self.log('train_loss', loss_adv)
-            # Step the learning rate scheduler
-            lr_scheduler = self.lr_schedulers()
-            lr_scheduler.step()
-    
-        elif self.use_asam:
-            # ASAM optimization
-            optimizer.zero_grad()
-            preds = self.forward(batch)
-            if self.heteroscedastic:
-                mean = preds['mean']  # Ensure your model outputs 'mean' and 'variance'
-                variance = preds['variance']
-                loss = self.loss_function(mean, targets, variance)
-            else:
-                loss = self.loss_function(preds, batch)
-            self.manual_backward(loss)
-            # Compute parameter norms and scaled gradients
-            with torch.no_grad():
-                param_norms = []
-                for p in self.parameters():
-                    if p.grad is None:
-                        param_norms.append(None)
-                        continue
-                    param_norm = torch.norm(p)
-                    param_norms.append(param_norm)
-                # Compute scaled gradients
-                scaled_grads = []
-                for p, param_norm in zip(self.parameters(), param_norms):
-                    if p.grad is None:
-                        continue
-                    scaled_grad = p.grad / (param_norm + 1e-12)
-                    scaled_grads.append(scaled_grad.view(-1))
-                # Compute the overall scaled gradient norm
-                scaled_grad_norm = torch.norm(torch.cat(scaled_grads))
-                # Compute epsilon
-                epsilon = self.sam_rho / (scaled_grad_norm + 1e-12)
-                # Perturb parameters
-                for p, param_norm in zip(self.parameters(), param_norms):
-                    if p.grad is None:
-                        continue
-                    perturbation = epsilon * p.grad / (param_norm + 1e-12)
-                    p.add_(perturbation)
-            # Second forward-backward pass
-            optimizer.zero_grad()
-            preds_adv = self.forward(batch)
-            loss_adv = self.loss_function(preds_adv, batch)
-            self.manual_backward(loss_adv)
-            # Restore original parameters
-            with torch.no_grad():
-                for p, param_norm in zip(self.parameters(), param_norms):
-                    if p.grad is None:
-                        continue
-                    perturbation = epsilon * p.grad / (param_norm + 1e-12)
-                    p.sub_(perturbation)
-            # Update parameters
-            optimizer.step()
-            self.log('train_loss', loss_adv)
-            # Step the learning rate scheduler
-            lr_scheduler = self.lr_schedulers()
-            lr_scheduler.step()
-
-        else:
-            # Regular training step
-            # Compute loss
-            preds = self.forward(batch)
-            if self.heteroscedastic:
-                mean = preds['mean']  # Ensure your model outputs 'mean' and 'variance'
-                variance = preds['variance']
-                loss = self.loss_function(mean, targets, variance)
-            else:
-                loss = self.loss_function(preds, batch)
-            self.log("train_loss", loss)
-            # Update learning rate
-            lr_scheduler = self.lr_schedulers()
-            lr_scheduler.step()
-            return loss
-            
-    def _grad_norm(self):
-        grad_norms = []
-        for p in self.parameters():
-            if p.grad is not None:
-                grad_norms.append(p.grad.detach().view(-1))
-        grad_norms = torch.cat(grad_norms)
-        total_norm = torch.norm(grad_norms, p=2)
-        return total_norm
+        # Compute loss
+        preds = self.forward(batch)
+        loss = self.loss_function(preds, batch)
+        self.log("train_loss", loss)
+        # Update learning rate
+        lr_scheduler = self.lr_schedulers()
+        lr_scheduler.step()
+        return loss
 
     def on_before_optimizer_step(self, optimizer):
         # Log the total gradient norm of the model
@@ -352,115 +201,14 @@ class LitPaiNNModel(L.LightningModule):
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
-class LitSWAGPaiNNModel(LitPaiNNModel):
-    """SWAG model extending LitPaiNNModel."""
-
-    def __init__(self, swa_start=0.8, max_num_models=20, no_cov_mat=True, **kwargs):
-        super().__init__(**kwargs)
-        self.swa_start = swa_start
-        self.max_num_models = max_num_models
-        self.no_cov_mat = no_cov_mat
-        self.num_parameters = sum(p.numel() for p in self.parameters())
-        self.register_buffer('mean', torch.zeros(self.num_parameters))
-        self.register_buffer('sq_mean', torch.zeros(self.num_parameters))
-        if not self.no_cov_mat:
-            self.register_buffer('cov_mat_sqrt', torch.zeros((self.max_num_models, self.num_parameters)))
-        self.num_models_collected = 0
-
-    def training_step(self, batch, batch_idx):
-        # Call the original training_step from LitPaiNNModel
-        loss = super().training_step(batch, batch_idx)
-        current_epoch = self.current_epoch
-        max_epochs = self.trainer.max_epochs
-        if current_epoch >= self.swa_start * max_epochs:
-            self.collect_model()
-        return loss
-
-    def collect_model(self):
-        param_vector = torch.nn.utils.parameters_to_vector(self.parameters())
-        if self.num_models_collected == 0:
-            self.mean.data.copy_(param_vector)
-            self.sq_mean.data.copy_(param_vector ** 2)
-        else:
-            delta = param_vector - self.mean.data
-            self.mean.data += delta / (self.num_models_collected + 1)
-            delta2 = param_vector ** 2 - self.sq_mean.data
-            self.sq_mean.data += delta2 / (self.num_models_collected + 1)
-        if not self.no_cov_mat and self.num_models_collected < self.max_num_models:
-            idx = self.num_models_collected % self.max_num_models
-            self.cov_mat_sqrt[idx].data.copy_(param_vector - self.mean.data)
-        self.num_models_collected += 1
-
-    def sample(self, scale=1.0, cov=False):
-        mean = self.mean
-        sq_mean = self.sq_mean
-        var = sq_mean - mean ** 2
-        std = torch.sqrt(var + 1e-30)
-        z = torch.randn(self.num_parameters, device=mean.device)
-        if cov and not self.no_cov_mat:
-            cov_mat_sqrt = self.cov_mat_sqrt[:min(self.num_models_collected, self.max_num_models)]
-            z_cov = torch.randn(cov_mat_sqrt.size(0), device=mean.device)
-            sample = mean + scale * (z * std + cov_mat_sqrt.t().matmul(z_cov) / (self.num_models_collected - 1) ** 0.5)
-        else:
-            sample = mean + scale * z * std
-        torch.nn.utils.vector_to_parameters(sample, self.parameters())
-
-    def predict_step(self, batch, batch_idx, dataloader_idx=None):
-        self.sample(scale=1.0, cov=not self.no_cov_mat)
-        preds = super().predict_step(batch, batch_idx, dataloader_idx)
-        return preds
-
-    def on_save_checkpoint(self, checkpoint):
-        checkpoint['mean'] = self.mean
-        checkpoint['sq_mean'] = self.sq_mean
-        checkpoint['num_models_collected'] = self.num_models_collected
-        if not self.no_cov_mat:
-            checkpoint['cov_mat_sqrt'] = self.cov_mat_sqrt
-
-    def on_load_checkpoint(self, checkpoint):
-        self.mean = checkpoint['mean']
-        self.sq_mean = checkpoint['sq_mean']
-        self.num_models_collected = checkpoint['num_models_collected']
-        if not self.no_cov_mat:
-            self.cov_mat_sqrt = checkpoint['cov_mat_sqrt']
-
-    def on_train_end(self):
-        # Save SWAG buffers
-        swag_state = {
-            'mean': self.mean,
-            'sq_mean': self.sq_mean,
-            'num_models_collected': self.num_models_collected,
-        }
-        if not self.no_cov_mat:
-            swag_state['cov_mat_sqrt'] = self.cov_mat_sqrt
-        swag_ckpt_path = Path(self.trainer.log_dir) / "swag.ckpt"
-        torch.save(swag_state, swag_ckpt_path)
-
 
 def main():
     cli = configure_cli("run_painn")
-    # Add model-specific arguments
     cli.add_lightning_class_args(LitPaiNNModel, "model")
-    # Link arguments as needed
     cli.link_arguments("data.cutoff", "model.cutoff", apply_on="parse")
     cli.link_arguments("data.pbc", "model.pbc", apply_on="parse")
     cli.link_arguments("data.target_property", "model.target_property", apply_on="parse")
-    # Link SAM arguments
-    cli.link_arguments("use_sam", "model.use_sam", apply_on="parse")
-    cli.link_arguments("use_asam", "model.use_asam", apply_on="parse")
-    cli.link_arguments("sam_rho", "model.sam_rho", apply_on="parse")
-    # Link heteroscedastic argument
-    cli.link_arguments("heteroscedastic", "model.heteroscedastic", apply_on="parse")
-  
-
-    # Run the script
-    cfg = cli.parse_args()
-    if cfg.use_swag:
-        lit_model_cls = LitSWAGPaiNNModel
-    else:
-        lit_model_cls = LitPaiNNModel
-
-    run(cli, lit_model_cls=lit_model_cls)
+    run(cli, LitPaiNNModel)
 
 
 if __name__ == '__main__':
