@@ -1,7 +1,7 @@
 """Loss functions."""
 
 import torch
-from torch.nn.functional import l1_loss, mse_loss
+from torch.nn.functional import l1_loss, mse_loss, gaussian_nll_loss
 
 from atomgnn.data.data import Batch
 
@@ -82,9 +82,6 @@ class MSELoss(torch.nn.Module):
         if self.stress:
             loss = loss + self.stress_weight * mse_loss(preds["stress"], batch.stress)
         return loss
-
-import torch
-from torch.nn.functional import gaussian_nll_loss
 
 class GaussianNLLLoss(torch.nn.Module):
     """Gaussian Negative Log-Likelihood (NLL) loss function."""
