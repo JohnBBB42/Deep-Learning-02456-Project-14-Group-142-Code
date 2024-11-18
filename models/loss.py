@@ -83,6 +83,112 @@ class MSELoss(torch.nn.Module):
             loss = loss + self.stress_weight * mse_loss(preds["stress"], batch.stress)
         return loss
 
+import torch
+from torch.nn.functional import gaussian_nll_loss
+
+class GaussianNLLLoss(torch.nn.Module):
+    """Gaussian Negative Log-Likelihood (NLL) loss function."""
+
+    def __init__(
+        self,
+        target_property: str = "",
+        variance: float = 1.0,
+        forces: bool = False,
+        forces_property: str = "forces",
+        forces_weight: float = 0.5,
+        stress: bool = False,
+        stress_weight: float = 0.1,
+        nodewise: bool = False,
+        **kwargs  # Ignore additional arguments
+    ) -> None:
+        """Initialize the loss function.
+
+        Args:
+            target_property: The target property in the dataset (use energy if falsy).
+            variance: Variance of the Gaussian distribution (can be a scalar or tensor).
+            forces: Include forces in the loss.
+            forces_property: The forces property in the predictions.
+            forces_weight: Trade-off between target and forces in the loss function (0.0 to 1.0).
+            stress: Include stress in the loss.
+            stress_weight: Weight of stress in the loss.
+            nodewise: Use nodewise loss instead of global loss.
+        """
+        super().__init__()
+        self.target_property = target_property or "energy"  # Use energy if falsy
+        self.variance = variance
+        self.forces = forces
+        self.forces_property = forces_property
+        self.forces_weight = forces_weight
+        self.stress = stress
+        self.stress_weight = stress_weight
+        self.nodewise = nodewise
+
+    def _global_nll_loss(self, preds: dict, batch) -> torch.Tensor:
+        targets = batch.energy if self.target_property == "energy" else batch.targets
+        # The Gaussian NLL loss of the predictions (averaged over batches).
+        loss = gaussian_nll_loss(
+            preds[self.target_property],
+            targets,
+            var=self.variance,
+            reduction='mean'
+        )
+        if self.forces:
+            # Compute the forces loss as the sum of NLL over all components and nodes.
+            forces_loss = gaussian_nll_loss(
+                preds[self.forces_property],
+                batch.forces,
+                var=self.variance,
+                reduction='sum'
+            )
+            # Make the forces loss independent of the batch size by dividing by num_data.
+            forces_loss = forces_loss / batch.num_data
+            loss = (1 - self.forces_weight) * loss + self.forces_weight * forces_loss
+        return loss
+
+    def _nodewise_nll_loss(self, preds: dict, batch) -> torch.Tensor:
+        targets = batch.energy if self.target_property == "energy" else batch.targets
+        num_nodes = batch.num_nodes.unsqueeze(1)
+        # The nodewise Gaussian NLL loss of the predictions
+        loss = gaussian_nll_loss(
+            preds[self.target_property] / num_nodes,
+            targets / num_nodes,
+            var=self.variance,
+            reduction='mean'
+        )
+        if self.forces:
+            # Compute the forces loss as the mean of NLL over all components and nodes.
+            forces_loss = gaussian_nll_loss(
+                preds[self.forces_property],
+                batch.forces,
+                var=self.variance,
+                reduction='mean'
+            )
+            loss = (1 - self.forces_weight) * loss + self.forces_weight * forces_loss
+        return loss
+
+    def forward(self, preds: dict, batch) -> torch.Tensor:
+        """Compute the loss.
+
+        Args:
+            preds: Dictionary of predictions.
+            batch: Batch of data.
+        Returns:
+            The loss.
+        """
+        if self.nodewise:
+            loss = self._nodewise_nll_loss(preds, batch)
+        else:
+            loss = self._global_nll_loss(preds, batch)
+        if self.stress:
+            loss = loss + self.stress_weight * gaussian_nll_loss(
+                preds["stress"],
+                batch.stress,
+                var=self.variance,
+                reduction='mean'
+            )
+        return loss
+
+
 
 class NequIPLoss(torch.nn.Module):
     """NequIP loss function.
