@@ -74,7 +74,7 @@ class LitPaiNNModel(L.LightningModule):
             cutoff=cutoff,
             pbc=pbc,
             readout_reduction=readout_reduction,
-            readout_size=2,
+            #readout_size=2,
         )
         model = atomgnn.models.utils.DictOutputWrapper(
             model,
