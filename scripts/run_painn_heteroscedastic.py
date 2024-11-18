@@ -30,7 +30,8 @@ class LitPaiNNModel(L.LightningModule):
         loss_forces_weight: float = 0.5,
         loss_stress_weight: float = 0.1,
         loss_nodewise: bool = False,
-        loss_function: bool = False, # Add NLL loss
+        heteroscedastic: bool = False, # Add NLL loss
+        loss_variance: float = 1.0,
         # Optimizer
         init_lr: float = 1e-4,
         use_sam: bool = False,  # Add SAM
@@ -70,9 +71,10 @@ class LitPaiNNModel(L.LightningModule):
         self.forces = forces
         self.stress = stress
         self.init_lr = init_lr
-        self.use_sam = use_sam  # Save use_sam as an instance variable
+        self.use_sam = use_sam
         self.use_asam = use_asam
-        self.sam_rho = sam_rho  # Add this line
+        self.sam_rho = sam_rho
+        self.heteroscedastic = heteroscedastic
         if self.use_sam and self.use_asam:
             raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
         if self.use_sam or self.use_asam:
@@ -107,15 +109,27 @@ class LitPaiNNModel(L.LightningModule):
         )
         self.model = model
         # Initialize loss function
-        self.loss_function = atomgnn.models.loss.MSELoss(
-            target_property=self.target_property,
-            forces=forces,
-            forces_property=self.forces_property,
-            forces_weight=loss_forces_weight,
-            stress=stress,
-            stress_weight=loss_stress_weight,
-            nodewise=loss_nodewise,
-        )
+        if self.heteroscedastic:
+            self.loss_function = atomgnn.models.loss.GaussianNLLLoss(
+                target_property=self.target_property,
+                variance=loss_variance,
+                forces=forces,
+                forces_property=self.forces_property,
+                forces_weight=loss_forces_weight,
+                stress=stress,
+                stress_weight=loss_stress_weight,
+                nodewise=loss_nodewise,
+            )
+        else:
+            self.loss_function = atomgnn.models.loss.MSELoss(
+                target_property=self.target_property,
+                forces=forces,
+                forces_property=self.forces_property,
+                forces_weight=loss_forces_weight,
+                stress=stress,
+                stress_weight=loss_stress_weight,
+                nodewise=loss_nodewise,
+            )
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
     def forward(self, batch):
@@ -414,6 +428,8 @@ def main():
     cli.link_arguments("use_sam", "model.use_sam", apply_on="parse")
     cli.link_arguments("use_asam", "model.use_asam", apply_on="parse")
     cli.link_arguments("sam_rho", "model.sam_rho", apply_on="parse")
+    # Link heteroscedastic argument
+    cli.link_arguments("heteroscedastic", "model.heteroscedastic", apply_on="parse")
 
     # Run the script
     cfg = cli.parse_args()
