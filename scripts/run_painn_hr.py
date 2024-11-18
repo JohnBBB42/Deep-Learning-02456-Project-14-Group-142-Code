@@ -29,6 +29,7 @@ class LitPaiNNModel(L.LightningModule):
         loss_forces_weight: float = 0.5,
         loss_stress_weight: float = 0.1,
         loss_nodewise: bool = False,
+        loss_variance: float = 1.0,
         # Optimizer
         init_lr: float = 1e-4,
         # Underscores hide these arguments from the CLI
@@ -96,15 +97,15 @@ class LitPaiNNModel(L.LightningModule):
         )
         self.model = model
         # Initialize loss function
-        self.loss_function = atomgnn.models.loss.MSELoss(
-            target_property=self.target_property,
-            forces=forces,
-            forces_property=self.forces_property,
-            forces_weight=loss_forces_weight,
-            stress=stress,
-            stress_weight=loss_stress_weight,
-            nodewise=loss_nodewise,
-        )
+        #self.loss_function = atomgnn.models.loss.MSELoss(
+        #    target_property=self.target_property,
+        #    forces=forces,
+        #    forces_property=self.forces_property,
+        #    forces_weight=loss_forces_weight,
+        #    stress=stress,
+        #    stress_weight=loss_stress_weight,
+        #    nodewise=loss_nodewise,
+        #)
         self.loss_function = atomgnn.models.loss.GaussianNLLLoss(
             target_property=self.target_property,
             variance=loss_variance,
