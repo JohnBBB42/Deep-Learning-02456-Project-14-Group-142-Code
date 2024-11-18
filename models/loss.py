@@ -122,42 +122,46 @@ class GaussianNLLLoss(torch.nn.Module):
 
     def _global_nll_loss(self, preds: dict, batch) -> torch.Tensor:
         targets = batch.energy if self.target_property == "energy" else batch.targets
+        var = torch.full_like(preds[self.target_property], self.variance)
         # The Gaussian NLL loss of the predictions (averaged over batches).
         loss = gaussian_nll_loss(
             preds[self.target_property],
             targets,
-            var=self.variance,
+            var=var,
             reduction='mean'
         )
         if self.forces:
+            var_forces = torch.full_like(preds[self.forces_property], self.variance)
             # Compute the forces loss as the sum of NLL over all components and nodes.
             forces_loss = gaussian_nll_loss(
                 preds[self.forces_property],
                 batch.forces,
-                var=self.variance,
+                var=var_forces,
                 reduction='sum'
             )
             # Make the forces loss independent of the batch size by dividing by num_data.
             forces_loss = forces_loss / batch.num_data
             loss = (1 - self.forces_weight) * loss + self.forces_weight * forces_loss
         return loss
-
+    
     def _nodewise_nll_loss(self, preds: dict, batch) -> torch.Tensor:
         targets = batch.energy if self.target_property == "energy" else batch.targets
         num_nodes = batch.num_nodes.unsqueeze(1)
+        var = torch.full_like(preds[self.target_property], self.variance)
         # The nodewise Gaussian NLL loss of the predictions
         loss = gaussian_nll_loss(
             preds[self.target_property] / num_nodes,
             targets / num_nodes,
-            var=self.variance,
+            var=var,
             reduction='mean'
         )
         if self.forces:
+            var_forces = torch.full_like(preds[self.forces_property], self.variance)
             # Compute the forces loss as the mean of NLL over all components and nodes.
             forces_loss = gaussian_nll_loss(
                 preds[self.forces_property],
                 batch.forces,
-                var=self.variance,
+                var=var_forces,
                 reduction='mean'
             )
             loss = (1 - self.forces_weight) * loss + self.forces_weight * forces_loss
