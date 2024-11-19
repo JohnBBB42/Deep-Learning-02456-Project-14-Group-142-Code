@@ -79,11 +79,6 @@ class LitPaiNNModel(L.LightningModule):
         self.heteroscedastic = heteroscedastic
         self.use_laplace = use_laplace
         self.num_laplace_samples = num_laplace_samples
-        # Store parameter shapes
-        self.param_shapes = [p.shape for p in self.parameters()]
-        # Accumulate squared gradients
-        self.accumulated_squared_gradients = [torch.zeros_like(p) for p in self.parameters()]
-        self.total_batches = 0  # Number of batches processed
         if self.use_sam and self.use_asam:
             raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
         if self.use_sam or self.use_asam:
@@ -140,6 +135,13 @@ class LitPaiNNModel(L.LightningModule):
                 nodewise=loss_nodewise,
             )
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
+        # Now that all parameters are defined, initialize accumulated_squared_gradients
+        if self.use_laplace:
+            # Store parameter shapes
+            self.param_shapes = [p.shape for p in self.parameters()]
+            # Accumulate squared gradients
+            self.accumulated_squared_gradients = [torch.zeros_like(p) for p in self.parameters()]
+            self.total_batches = 0  # Number of batches processed
 
     def forward(self, batch):
         return self.model(batch)
@@ -192,6 +194,8 @@ class LitPaiNNModel(L.LightningModule):
             # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
+            if self.use_laplace:
+                self.total_batches += 1
     
         elif self.use_asam:
             # ASAM optimization
@@ -248,7 +252,8 @@ class LitPaiNNModel(L.LightningModule):
             # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
-
+            if self.use_laplace:
+                self.total_batches += 1
         else:
             # Regular training step
             # Compute loss
@@ -263,6 +268,8 @@ class LitPaiNNModel(L.LightningModule):
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
+            if self.use_laplace:
+                self.total_batches += 1
             return loss
             
     def _grad_norm(self):
