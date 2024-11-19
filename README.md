@@ -15,8 +15,12 @@ Furthermore, there is a range of extensions has been applied as extensions to th
 
 •	[8] ASAM: https://arxiv.org/pdf/2102.11600
 
-•	[9] Heteroscedastic Regression https://arxiv.org/abs/2006.04910, https://arxiv.org/pdf/2212.09184, https://openreview.net/pdf?id=A6EquH0enk
+•	[9] Heteroscedastic Regression https://arxiv.org/abs/2006.04910, https://arxiv.org/pdf/2212.09184
 
+•	[10] Laplacian Approximation https://openreview.net/pdf?id=A6EquH0enk
+
+
+Grid search to optimize models
 compare the results focusing mainly on energy and or force prediction. compare them with a benchmark being the plain PaiNN model trained on QM9,
 combine some of the methods to see if that can provide even better results.
 
