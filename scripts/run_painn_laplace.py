@@ -10,8 +10,6 @@ import atomgnn.models.utils
 
 from pathlib import Path
 from run_atoms import configure_cli, run
-from laplace import Laplace
-
 
 class LitPaiNNModel(L.LightningModule):
     """PaiNN model."""
@@ -40,9 +38,7 @@ class LitPaiNNModel(L.LightningModule):
         sam_rho: float = 0.01,
         # Laplace approximation parameters
         use_laplace: bool = False,
-        hessian_structure: str = 'diag',
-        laplace_subnet: str = 'all',
-        laplace_prior_precision: float = 1e-2,  # Prior precision for Laplace
+        num_laplace_samples: int = 10,
         # Underscores hide these arguments from the CLI
         _output_scale: float = 1.0,
         _output_offset: float = 0.0,
@@ -82,10 +78,12 @@ class LitPaiNNModel(L.LightningModule):
         self.sam_rho = sam_rho
         self.heteroscedastic = heteroscedastic
         self.use_laplace = use_laplace
-        self.hessian_structure = hessian_structure
-        self.laplace_subnet = laplace_subnet
-        self.laplace_prior_precision = laplace_prior_precision
-        self.laplace = None  # Will hold the Laplace approximation
+        self.num_laplace_samples = num_laplace_samples
+        # Store parameter shapes
+        self.param_shapes = [p.shape for p in self.parameters()]
+        # Accumulate squared gradients
+        self.accumulated_squared_gradients = [torch.zeros_like(p) for p in self.parameters()]
+        self.total_batches = 0  # Number of batches processed
         if self.use_sam and self.use_asam:
             raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
         if self.use_sam or self.use_asam:
@@ -154,6 +152,11 @@ class LitPaiNNModel(L.LightningModule):
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
+            if self.use_laplace:
+                with torch.no_grad():
+                    for i, p in enumerate(self.parameters()):
+                        if p.grad is not None:
+                            self.accumulated_squared_gradients[i] += p.grad.data.clone() ** 2
             # Compute gradient norm
             grad_norm = torch.norm(
                 torch.stack([
@@ -196,6 +199,11 @@ class LitPaiNNModel(L.LightningModule):
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
+            if self.use_laplace:
+                with torch.no_grad():
+                    for i, p in enumerate(self.parameters()):
+                        if p.grad is not None:
+                            self.accumulated_squared_gradients[i] += p.grad.data.clone() ** 2
             # Compute parameter norms and scaled gradients
             with torch.no_grad():
                 param_norms = []
@@ -247,6 +255,11 @@ class LitPaiNNModel(L.LightningModule):
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             self.log("train_loss", loss)
+            if self.use_laplace:
+                with torch.no_grad():
+                    for i, p in enumerate(self.parameters()):
+                        if p.grad is not None:
+                            self.accumulated_squared_gradients[i] += p.grad.data.clone() ** 2
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
@@ -332,29 +345,36 @@ class LitPaiNNModel(L.LightningModule):
         self._metrics.clear()  # Clear accumulated evaluation metrics
 
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
-        if self.use_laplace and self.laplace is not None:
-            # Use the Laplace approximation for prediction
-            with torch.no_grad():
-                f_mu, f_var = self.laplace(
-                    batch,
-                    pred_type='glm',  # Gaussian linear model approximation
-                    link_approx='probit',  # For regression tasks
-                )
-                # Combine model variance (if heteroscedastic) with Laplace variance
-                if self.heteroscedastic:
-                    # Assuming model outputs variance predictions
-                    preds = self.forward(batch)
-                    model_var = preds[f"{self.target_property}_var"]
-                    total_var = f_var + model_var
-                else:
-                    # Total variance is Laplace variance plus fixed model variance
-                    total_var = f_var + self.loss_variance
-
-                # Return mean and total variance
-                return {
-                    self.target_property: f_mu.detach().cpu(),
-                    f"{self.target_property}_var": total_var.detach().cpu(),
-                }
+        if self.use_laplace and hasattr(self, 'hessian_diagonal'):
+            # Sample weights from the approximated posterior
+            predictions = []
+            for _ in range(self.num_laplace_samples):
+                sampled_params = []
+                for mean, var in zip(self.param_means, self.hessian_diagonal):
+                    # Variance is inverse of Hessian diagonal (Laplace approximation)
+                    std = (1.0 / (var + 1e-6)).sqrt()
+                    noise = torch.randn_like(std) * std
+                    sampled_param = mean + noise
+                    sampled_params.append(sampled_param)
+                # Temporarily load sampled parameters into the model
+                param_backup = [p.detach().clone() for p in self.parameters()]
+                with torch.no_grad():
+                    for p, sp in zip(self.parameters(), sampled_params):
+                        p.copy_(sp)
+                # Make prediction
+                preds = self.forward(batch)
+                predictions.append(preds[self.target_property].detach().cpu())
+                # Restore original parameters
+                with torch.no_grad():
+                    for p, pb in zip(self.parameters(), param_backup):
+                        p.copy_(pb)
+            # Compute mean and variance over samples
+            preds_mean = torch.stack(predictions).mean(dim=0)
+            preds_var = torch.stack(predictions).var(dim=0)
+            return {
+                self.target_property: preds_mean,
+                f"{self.target_property}_var": preds_var,
+            }
         else:
             if self.forces or self.stress:
                 torch.set_grad_enabled(True)  # Enable gradients
@@ -367,34 +387,16 @@ class LitPaiNNModel(L.LightningModule):
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
     def on_train_end(self):
-        # Compute Laplace approximation after training if enabled
         if self.use_laplace:
-            self.compute_laplace()
-
-    def compute_laplace(self):
-        # Initialize Laplace approximation
-        self.laplace = Laplace(
-            self.model,
-            likelihood='regression',
-            subset_of_weights=self.laplace_subnet,
-            hessian_structure=self.hessian_structure,
-            prior_precision=self.laplace_prior_precision,
-        )
-        # Prepare data for the Laplace approximation
-        train_loader = self.trainer.datamodule.train_dataloader()
-        # Create a predictive function compatible with Laplace
-        def predict_function(model, x):
-            preds = model(x)
-            return preds[self.target_property]
-
-        # Fit the Laplace approximation
-        self.laplace.fit(
-            train_loader,
-            override_likelihood=True,  # Override default likelihood handling
-            predict_fn=predict_function,
-        )
-        # Optimize the prior precision (optional)
-        self.laplace.optimize_prior_precision(method='marglik')
+            # Compute the approximate Hessian diagonal
+            self.hessian_diagonal = []
+            for sq_grad in self.accumulated_squared_gradients:
+                h_diag = sq_grad / self.total_batches
+                self.hessian_diagonal.append(h_diag)
+            # Store the parameter means (trained weights)
+            self.param_means = [p.detach().clone() for p in self.parameters()]
+            # Reset accumulated gradients to free memory
+            self.accumulated_squared_gradients = None
 
 class LitSWAGPaiNNModel(LitPaiNNModel):
     """SWAG model extending LitPaiNNModel."""
@@ -497,9 +499,7 @@ def main():
     cli.link_arguments("heteroscedastic", "model.heteroscedastic", apply_on="parse")
     # Laplace
     cli.link_arguments("use_laplace", "model.use_laplace", apply_on="parse")
-    cli.link_arguments("hessian_structure", "model.hessian_structure", apply_on="parse")
-    cli.link_arguments("laplace_subnet", "model.laplace_subnet", apply_on="parse")
-    cli.link_arguments("laplace_prior_precision", "model.laplace_prior_precision", apply_on="parse")
+    cli.link_arguments("num_laplace_samples", "model.num_laplace_samples", apply_on="parse")
 
     # Run the script
     cfg = cli.parse_args()
