@@ -196,7 +196,6 @@ class LitPaiNNModel(L.LightningModule):
             # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
-            if self.use_laplace:
 
     
         elif self.use_asam:
@@ -255,6 +254,7 @@ class LitPaiNNModel(L.LightningModule):
             # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
+            
         else:
             # Regular training step
             # Compute loss
