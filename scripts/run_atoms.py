@@ -634,6 +634,8 @@ def configure_cli(default_job_name, add_trainer_args=True, add_data_args=True):
                      help='Structure of the Hessian for Laplace approximation.')
     cli.add_argument('--laplace_subnet', type=str, default='all', choices=['all', 'last_layer'],
                      help='Subset of weights for Laplace approximation.')
+    cli.add_argument('--laplace_prior_precision', type=float, default=1e-2,
+                     help='Prior precision for Laplace approximation.')
     if add_trainer_args:
         # cli = pl.Trainer.add_argparse_args(cli)  # Add all trainer arguments to cli
         cli.add_lightning_class_args(configure_trainer, "trainer")
