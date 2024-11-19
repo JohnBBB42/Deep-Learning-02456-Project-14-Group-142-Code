@@ -2,8 +2,6 @@
 
 import lightning as L
 import torch
-import torch.nn.functional as F
-from torch_scatter import scatter
 
 import _atomgnn  # noqa: F401
 import atomgnn.models.painn
@@ -12,108 +10,7 @@ import atomgnn.models.utils
 
 from pathlib import Path
 from run_atoms import configure_cli, run
-
-# Import necessary components from the PaiNN model
-from atomgnn.data.data import Batch
-from atomgnn.models.utils import (BesselExpansion, compute_edge_vectors_and_norms,
-                                  cosine_cutoff, reduce_splits, sum_index)
-from atomgnn.models.painn import PaiNNInteractionBlock
-
-
-class PaiNNWithEmbeddings(torch.nn.Module):
-    """PaiNN model that returns node embeddings and optionally computes the Laplacian."""
-
-    def __init__(
-        self,
-        node_size: int = 64,
-        edge_size: int = 20,
-        num_interaction_blocks: int = 3,
-        cutoff: float = 5.0,
-        pbc: bool = False,
-        use_readout: bool = True,
-        num_readout_layers: int = 2,
-        readout_size: int = 1,
-        readout_reduction: str | None = "sum",
-        **kwargs,
-    ) -> None:
-        super().__init__(**kwargs)
-        self.node_size = node_size
-        self.edge_size = edge_size
-        self.num_interaction_blocks = num_interaction_blocks
-        self.cutoff = cutoff
-        self.pbc = pbc
-        self.use_readout = use_readout
-        self.num_readout_layers = num_readout_layers
-        self.readout_size = readout_size
-        self.readout_reduction = readout_reduction
-
-        # Setup node embedding
-        num_embeddings = 119  # atomic numbers + 1
-        self.node_embedding = torch.nn.Embedding(num_embeddings, node_size)
-        # Setup edge expansion
-        self.edge_expansion = BesselExpansion(edge_size, cutoff)
-        # Setup interaction blocks
-        self.interaction_blocks = torch.nn.ModuleList(
-            PaiNNInteractionBlock(node_size, edge_size, cutoff)
-            for _ in range(num_interaction_blocks)
-        )
-        # Setup readout network
-        if self.use_readout:
-            self.readout_net = torch.nn.Sequential()
-            for _ in range(num_readout_layers - 1):
-                self.readout_net.append(torch.nn.Linear(node_size, node_size))
-                self.readout_net.append(torch.nn.SiLU())
-            self.readout_net.append(torch.nn.Linear(node_size, readout_size))
-
-    def forward(self, input: Batch) -> torch.Tensor:
-        if not hasattr(input, 'node_features') or input.node_features is None:
-            print("Warning: node_features is missing in the input batch. Please ensure that your data loader provides this attribute.")
-            raise AttributeError("Input batch does not have 'node_features' or it is None.")
-
-        node_states_scalar = self.node_embedding(input.node_features.squeeze())
-        node_states_vector = torch.zeros(
-            (node_states_scalar.shape[0], 3, self.node_size),
-            dtype=node_states_scalar.dtype,
-            device=node_states_scalar.device
-        )
-
-        edge_vectors, edge_norms = compute_edge_vectors_and_norms(
-            input.node_positions, input.edge_index,
-            input.edge_shift if self.pbc else None,
-            input.cell[input.edge_data_index] if self.pbc else None,
-        )
-        edge_vectors = edge_vectors / (edge_norms + 1e-10)
-        edge_states = self.edge_expansion(edge_norms)
-
-        for interaction_block in self.interaction_blocks:
-            node_states_scalar, node_states_vector = interaction_block(
-                node_states_scalar, node_states_vector,
-                edge_states, edge_vectors, edge_norms, input.edge_index
-            )
-
-        if self.use_readout:
-            node_states_scalar_readout = self.readout_net(node_states_scalar)
-        else:
-            node_states_scalar_readout = node_states_scalar
-
-        if self.readout_reduction:
-            output_scalar = reduce_splits(
-                node_states_scalar_readout, input.num_nodes, reduction=self.readout_reduction
-            )
-        else:
-            output_scalar = node_states_scalar_readout
-        return output_scalar, node_states_scalar
-
-    def _compute_laplacian(self, node_states, edge_index):
-        if edge_index.shape[0] != 2 and edge_index.shape[1] == 2:
-            edge_index = edge_index.t()
-        if edge_index.ndim != 2 or edge_index.shape[0] != 2:
-            raise ValueError(f"Expected edge_index to have shape (2, num_edges), but got {edge_index.shape}")
-
-        row, col = edge_index[0], edge_index[1]
-        degree = scatter(torch.ones_like(row, dtype=node_states.dtype), row, dim=0, reduce="sum")
-        laplacian = degree.unsqueeze(1) * node_states - scatter(node_states[col], row, dim=0, reduce="sum")
-        return laplacian
+from laplace import Laplace
 
 
 class LitPaiNNModel(L.LightningModule):
@@ -134,13 +31,18 @@ class LitPaiNNModel(L.LightningModule):
         loss_forces_weight: float = 0.5,
         loss_stress_weight: float = 0.1,
         loss_nodewise: bool = False,
+        heteroscedastic: bool = False, # Add NLL loss
+        loss_variance: float = 1.0,
         # Optimizer
         init_lr: float = 1e-4,
         use_sam: bool = False,  # Add SAM
         use_asam: bool = False, # Add ASAM
-        sam_rho: float = 0.05,
-        # Heteroscedastic
-        heteroscedastic: bool = False,
+        sam_rho: float = 0.01,
+        # Laplace approximation parameters
+        use_laplace: bool = False,
+        hessian_structure: str = 'diag',
+        laplace_subnet: str = 'all',
+        laplace_prior_precision: float = 1e-2,  # Prior precision for Laplace
         # Underscores hide these arguments from the CLI
         _output_scale: float = 1.0,
         _output_offset: float = 0.0,
@@ -175,70 +77,60 @@ class LitPaiNNModel(L.LightningModule):
         self.forces = forces
         self.stress = stress
         self.init_lr = init_lr
-        self.use_sam = use_sam  # Save use_sam as an instance variable
+        self.use_sam = use_sam
         self.use_asam = use_asam
-        self.sam_rho = sam_rho  # Add this line
-        self.readout_reduction = readout_reduction
+        self.sam_rho = sam_rho
         self.heteroscedastic = heteroscedastic
-        self._output_scale = _output_scale
-        self._output_offset = _output_offset
+        self.use_laplace = use_laplace
+        self.hessian_structure = hessian_structure
+        self.laplace_subnet = laplace_subnet
+        self.laplace_prior_precision = laplace_prior_precision
+        self.laplace = None  # Will hold the Laplace approximation
         if self.use_sam and self.use_asam:
             raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
         if self.use_sam or self.use_asam:
             self.automatic_optimization = False  # Disable automatic optimization when using SAM
         # Initialize model
-        if self.heteroscedastic:
-            # Use the custom PaiNN model that returns embeddings
-            model: torch.nn.Module = PaiNNWithEmbeddings(
-                node_size=node_size,
-                edge_size=edge_size,
-                num_interaction_blocks=num_interaction_blocks,
-                cutoff=cutoff,
-                pbc=pbc,
-                readout_reduction=readout_reduction,
-            )
-        else:
-            model: torch.nn.Module = atomgnn.models.painn.PaiNN(
-                node_size=node_size,
-                edge_size=edge_size,
-                num_interaction_blocks=num_interaction_blocks,
-                cutoff=cutoff,
-                pbc=pbc,
-                readout_reduction=readout_reduction,
-            )
-        # Define the readout layer
-        if self.heteroscedastic:
-            self.readout = HeteroscedasticReadout(input_size=node_size, reduction=readout_reduction)
-        else:
-            self.readout = torch.nn.Linear(node_size, 1)
-        output_keys = [self.target_property]
-        if self.heteroscedastic:
-            output_keys.append('node_states_scalar')
-        if not self.heteroscedastic:
-            model = atomgnn.models.utils.DictOutputWrapper(
-                model,
-                #output_keys=[self.target_property],
-                output_keys=output_keys,
-            )
-            model = atomgnn.models.utils.ScaleOutputWrapper(
-                model,
-                output_property=self.target_property,
-                scale=torch.tensor(_output_scale),
-                offset=torch.tensor(_output_offset),
-                nodewise=_nodewise_offset,
-            )
-            model = atomgnn.models.utils.GradOutputWrapper(
-                model,
-                forces=forces,
-                stress=stress,
-                energy_property=self.target_property,
-                forces_property=self.forces_property,
-                stress_property=self.stress_property,
-            )
+        model: torch.nn.Module = atomgnn.models.painn.PaiNN(
+            node_size=node_size,
+            edge_size=edge_size,
+            num_interaction_blocks=num_interaction_blocks,
+            cutoff=cutoff,
+            pbc=pbc,
+            readout_reduction=readout_reduction,
+        )
+        model = atomgnn.models.utils.DictOutputWrapper(
+            model,
+            output_keys=[self.target_property],
+        )
+        model = atomgnn.models.utils.ScaleOutputWrapper(
+            model,
+            output_property=self.target_property,
+            scale=torch.tensor(_output_scale),
+            offset=torch.tensor(_output_offset),
+            nodewise=_nodewise_offset,
+        )
+        model = atomgnn.models.utils.GradOutputWrapper(
+            model,
+            forces=forces,
+            stress=stress,
+            energy_property=self.target_property,
+            forces_property=self.forces_property,
+            stress_property=self.stress_property,
+        )
         self.model = model
         # Initialize loss function
         if self.heteroscedastic:
-            self.loss_function = self.heteroscedastic_loss
+            self.loss_function = atomgnn.models.loss.GaussianNLLLoss(
+                target_property=self.target_property,
+                variance=loss_variance,
+                forces=forces,
+                forces_property=self.forces_property,
+                forces_weight=loss_forces_weight,
+                stress=stress,
+                stress_weight=loss_stress_weight,
+                nodewise=loss_nodewise,
+            )
         else:
             self.loss_function = atomgnn.models.loss.MSELoss(
                 target_property=self.target_property,
@@ -251,58 +143,8 @@ class LitPaiNNModel(L.LightningModule):
             )
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
 
-    def heteroscedastic_loss(self, preds, batch):
-        targets = batch.energy if self.target_property == "energy" else batch.targets
-        error = targets - preds[self.target_property]
-        log_variance = preds["log_variance"]
-        variance = torch.exp(log_variance)
-        loss_energy = 0.5 * ((error ** 2) / variance + log_variance).mean()
-        loss = loss_energy
-        if self.forces:
-            forces_error = batch.forces - preds[self.forces_property]
-            loss_forces = self.hparams.loss_forces_weight * torch.nn.functional.mse_loss(
-                preds[self.forces_property], batch.forces)
-            loss += loss_forces
-        return loss
-
-
     def forward(self, batch):
-        if self.heteroscedastic:
-            positions = getattr(batch, 'node_positions', None)
-            if positions is None:
-                positions = getattr(batch, 'pos', None)
-            if self.forces and positions is not None:
-                positions.requires_grad_(True)
-
-            # Unpack outputs from the model, which may include the Laplacian
-            outputs = self.model(batch)
-            output_scalar, node_states_scalar = outputs
-
-            # Compute mean and log variance
-            mean, log_variance = self.readout(node_states_scalar, batch.node_data_index)
-
-            # Apply scaling to mean
-            mean = mean.squeeze(-1) * self._output_scale + self._output_offset
-            outputs_dict = {
-                self.target_property: mean,
-                'log_variance': log_variance.squeeze(-1)
-            }
-
-            # Compute forces if required
-            if self.forces and positions is not None:
-                energy = mean.sum()
-                forces = -torch.autograd.grad(
-                    energy, positions, create_graph=self.training, retain_graph=True
-                )[0]
-                outputs_dict[self.forces_property] = forces
-        else:
-            # Handle non-heteroscedastic model case
-            outputs_dict = self.model(batch)
-
-        return outputs_dict
-
-    #def forward(self, batch):
-        #return self.model(batch)
+        return self.model(batch)
 
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
@@ -310,7 +152,6 @@ class LitPaiNNModel(L.LightningModule):
             # First forward-backward pass
             optimizer.zero_grad()
             preds = self.forward(batch)
-            targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
             # Compute gradient norm
@@ -348,11 +189,11 @@ class LitPaiNNModel(L.LightningModule):
             # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
+    
         elif self.use_asam:
             # ASAM optimization
             optimizer.zero_grad()
             preds = self.forward(batch)
-            targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
             # Compute parameter norms and scaled gradients
@@ -399,18 +240,18 @@ class LitPaiNNModel(L.LightningModule):
             # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
+
         else:
             # Regular training step
             # Compute loss
             preds = self.forward(batch)
-            targets = batch.energy if self.target_property == "energy" else batch.targets
             loss = self.loss_function(preds, batch)
             self.log("train_loss", loss)
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
             return loss
-
+            
     def _grad_norm(self):
         grad_norms = []
         for p in self.parameters():
@@ -440,9 +281,6 @@ class LitPaiNNModel(L.LightningModule):
         self._on_eval_epoch_end("test")
 
     def _eval_step(self, batch, batch_idx, prefix):
-        # Check if node_features are present
-        if not hasattr(batch, 'node_features') or batch.node_features is None:
-            raise AttributeError(f"{prefix} Batch {batch_idx} does not have 'node_features' or it is None.")
         # Compute predictions and error
         with torch.enable_grad():  # Enable gradients for computing forces
             preds = self.forward(batch)
@@ -494,25 +332,69 @@ class LitPaiNNModel(L.LightningModule):
         self._metrics.clear()  # Clear accumulated evaluation metrics
 
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
-        if self.forces or self.stress:
-            torch.set_grad_enabled(True)  # Enable gradients
-        if self.use_laplace:
-            self.sample_from_posterior()
-        preds = self.forward(batch)
-        return {k: v.detach().cpu() for k, v in preds.items()}
+        if self.use_laplace and self.laplace is not None:
+            # Use the Laplace approximation for prediction
+            with torch.no_grad():
+                f_mu, f_var = self.laplace(
+                    batch,
+                    pred_type='glm',  # Gaussian linear model approximation
+                    link_approx='probit',  # For regression tasks
+                )
+                # Combine model variance (if heteroscedastic) with Laplace variance
+                if self.heteroscedastic:
+                    # Assuming model outputs variance predictions
+                    preds = self.forward(batch)
+                    model_var = preds[f"{self.target_property}_var"]
+                    total_var = f_var + model_var
+                else:
+                    # Total variance is Laplace variance plus fixed model variance
+                    total_var = f_var + self.loss_variance
+
+                # Return mean and total variance
+                return {
+                    self.target_property: f_mu.detach().cpu(),
+                    f"{self.target_property}_var": total_var.detach().cpu(),
+                }
+        else:
+            if self.forces or self.stress:
+                torch.set_grad_enabled(True)  # Enable gradients
+            preds = self.forward(batch)
+            return {k: v.detach().cpu() for k, v in preds.items()}
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
         return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
 
-    def sample_from_posterior(self):
-        """Sample parameters from the approximate posterior."""
-        if self.hessian_diag is None:
-            raise ValueError("Hessian diagonal not computed. Call laplace_approximation first.")
-        std = torch.sqrt(1.0 / (self.hessian_diag + 1e-6))
-        sampled_params = self.posterior_mean + std * torch.randn_like(self.posterior_mean)
-        torch.nn.utils.vector_to_parameters(sampled_params, self.parameters())
+    def on_train_end(self):
+        # Compute Laplace approximation after training if enabled
+        if self.use_laplace:
+            self.compute_laplace()
+
+    def compute_laplace(self):
+        # Initialize Laplace approximation
+        self.laplace = Laplace(
+            self.model,
+            likelihood='regression',
+            subset_of_weights=self.laplace_subnet,
+            hessian_structure=self.hessian_structure,
+            prior_precision=self.laplace_prior_precision,
+        )
+        # Prepare data for the Laplace approximation
+        train_loader = self.trainer.datamodule.train_dataloader()
+        # Create a predictive function compatible with Laplace
+        def predict_function(model, x):
+            preds = model(x)
+            return preds[self.target_property]
+
+        # Fit the Laplace approximation
+        self.laplace.fit(
+            train_loader,
+            override_likelihood=True,  # Override default likelihood handling
+            predict_fn=predict_function,
+        )
+        # Optimize the prior precision (optional)
+        self.laplace.optimize_prior_precision(method='marglik')
 
 class LitSWAGPaiNNModel(LitPaiNNModel):
     """SWAG model extending LitPaiNNModel."""
@@ -598,21 +480,6 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
         swag_ckpt_path = Path(self.trainer.log_dir) / "swag.ckpt"
         torch.save(swag_state, swag_ckpt_path)
 
-class HeteroscedasticReadout(torch.nn.Module):
-    def __init__(self, input_size, reduction='sum'):
-        super().__init__()
-        self.reduction = reduction
-        self.mean_layer = torch.nn.Linear(input_size, 1)
-        self.log_variance_layer = torch.nn.Linear(input_size, 1)
-
-    def forward(self, x, batch):
-        # x: node embeddings, batch: batch indices for nodes
-        # Aggregate node embeddings to graph-level embeddings
-        graph_embeddings = scatter(x, batch, dim=0, reduce=self.reduction)
-        mean = self.mean_layer(graph_embeddings)
-        log_variance = self.log_variance_layer(graph_embeddings)
-        return mean, log_variance
-
 
 def main():
     cli = configure_cli("run_painn")
@@ -628,6 +495,11 @@ def main():
     cli.link_arguments("sam_rho", "model.sam_rho", apply_on="parse")
     # Link heteroscedastic argument
     cli.link_arguments("heteroscedastic", "model.heteroscedastic", apply_on="parse")
+    # Laplace
+    cli.link_arguments("use_laplace", "model.use_laplace", apply_on="parse")
+    cli.link_arguments("hessian_structure", "model.hessian_structure", apply_on="parse")
+    cli.link_arguments("laplace_subnet", "model.laplace_subnet", apply_on="parse")
+    cli.link_arguments("laplace_prior_precision", "model.laplace_prior_precision", apply_on="parse")
 
     # Run the script
     cfg = cli.parse_args()
@@ -635,7 +507,6 @@ def main():
         lit_model_cls = LitSWAGPaiNNModel
     else:
         lit_model_cls = LitPaiNNModel
-
 
     run(cli, lit_model_cls=lit_model_cls)
 
