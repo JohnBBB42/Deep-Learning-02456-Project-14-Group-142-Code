@@ -136,13 +136,14 @@ class LitPaiNNModel(L.LightningModule):
             )
         self._metrics: dict[str, torch.Tensor] = dict()  # Accumulated evaluation metrics
         # Now that all parameters are defined, initialize accumulated_squared_gradients
-        if self.use_laplace:
-            # Store parameter shapes
-            self.param_shapes = [p.shape for p in self.parameters()]
-            # Accumulate squared gradients
-            self.accumulated_squared_gradients = [torch.zeros_like(p) for p in self.parameters()]
-            self.total_batches = 0  # Number of batches processed
 
+    def on_train_start(self):
+        if self.use_laplace:
+            # Now that the model is on the correct device, initialize attributes
+            self.param_shapes = [p.shape for p in self.parameters()]
+            self.accumulated_squared_gradients = [torch.zeros_like(p) for p in self.parameters()]
+            self.total_batches = 0  # Reset batch counter
+    
     def forward(self, batch):
         return self.model(batch)
 
@@ -159,6 +160,7 @@ class LitPaiNNModel(L.LightningModule):
                     for i, p in enumerate(self.parameters()):
                         if p.grad is not None:
                             self.accumulated_squared_gradients[i] += p.grad.data.clone() ** 2
+                self.total_batches += 1
             # Compute gradient norm
             grad_norm = torch.norm(
                 torch.stack([
@@ -195,7 +197,7 @@ class LitPaiNNModel(L.LightningModule):
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
             if self.use_laplace:
-                self.total_batches += 1
+
     
         elif self.use_asam:
             # ASAM optimization
@@ -208,6 +210,7 @@ class LitPaiNNModel(L.LightningModule):
                     for i, p in enumerate(self.parameters()):
                         if p.grad is not None:
                             self.accumulated_squared_gradients[i] += p.grad.data.clone() ** 2
+                self.total_batches += 1
             # Compute parameter norms and scaled gradients
             with torch.no_grad():
                 param_norms = []
@@ -252,8 +255,6 @@ class LitPaiNNModel(L.LightningModule):
             # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
-            if self.use_laplace:
-                self.total_batches += 1
         else:
             # Regular training step
             # Compute loss
@@ -265,11 +266,11 @@ class LitPaiNNModel(L.LightningModule):
                     for i, p in enumerate(self.parameters()):
                         if p.grad is not None:
                             self.accumulated_squared_gradients[i] += p.grad.data.clone() ** 2
+                self.total_batches += 1
             # Update learning rate
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
-            if self.use_laplace:
-                self.total_batches += 1
+
             return loss
             
     def _grad_norm(self):
