@@ -162,23 +162,27 @@ class LitPaiNNModel(L.LightningModule):
                             self.accumulated_squared_gradients[i] += p.grad.data.clone() ** 2
                 self.total_batches += 1
             # Compute gradient norm
-            grad_norm = torch.norm(
-                torch.stack([
-                    p.grad.detach().norm(2)
-                    for p in self.parameters()
-                    if p.grad is not None
-                ])
-            )
+            grad_norms = [p.grad.norm(2) for p in self.parameters() if p.grad is not None]
+            if len(grad_norms) == 0:
+                # No gradients found, just do a normal optimizer step
+                optimizer.step()
+                self.log('train_loss', loss)
+                lr_scheduler = self.lr_schedulers()
+                lr_scheduler.step()
+                return loss
+            grad_norm = torch.norm(torch.stack(grad_norms))
             # Log grad_norm
             self.log('grad_norm', grad_norm)
             # Perturb parameters
             e_ws = []
             with torch.no_grad():
                 for p in self.parameters():
-                    if p.grad is None:
-                      e_w = (p.grad / (grad_norm + 1e-12)) * self.sam_rho
-                      p.add_(e_w)
-                      e_ws.append((p, e_w))
+                    if p.grad is not None:
+                        e_w = (p.grad / (grad_norm + 1e-12)) * self.sam_rho
+                        p.add_(e_w)
+                        e_ws.append((p, e_w))
+                    else:
+                        e_ws.append((p, None))
             
             # Second forward-backward pass
             optimizer.zero_grad()
@@ -235,12 +239,13 @@ class LitPaiNNModel(L.LightningModule):
                 # Perturb parameters
                 perturbations = []
                 for p, param_norm in zip(self.parameters(), param_norms):
-                    if p.grad is None:
+                    if p.grad is not None:
+                        perturbation = epsilon * p.grad / (param_norm + 1e-12)
+                        p.add_(perturbation)
+                        perturbations.append(perturbation)
+                    else:
+                        # No gradient for this parameter
                         perturbations.append(None)
-                        continue
-                    perturbation = epsilon * p.grad / (param_norm + 1e-12)
-                    p.add_(perturbation)
-                    perturbations.append(perturbation)
             
             # Second forward-backward pass
             optimizer.zero_grad()
