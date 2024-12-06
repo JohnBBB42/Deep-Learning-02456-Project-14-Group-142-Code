@@ -155,52 +155,45 @@ class LitPaiNNModel(L.LightningModule):
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
-            if self.use_laplace:
-                with torch.no_grad():
-                    for i, p in enumerate(self.parameters()):
-                        if p.grad is not None:
-                            self.accumulated_squared_gradients[i] += p.grad.data.clone() ** 2
-                self.total_batches += 1
+    
             # Compute gradient norm
-            grad_norms = [p.grad.norm(2) for p in self.parameters() if p.grad is not None]
-            if len(grad_norms) == 0:
-                # No gradients found, just do a normal optimizer step
-                optimizer.step()
-                self.log('train_loss', loss)
-                lr_scheduler = self.lr_schedulers()
-                lr_scheduler.step()
-                return loss
-            grad_norm = torch.norm(torch.stack(grad_norms))
-            # Log grad_norm
+            grad_norm = torch.norm(
+                torch.stack([
+                    p.grad.detach().norm(2)
+                    for p in self.parameters()
+                    if p.grad is not None
+                ])
+            )
             self.log('grad_norm', grad_norm)
-            # Perturb parameters
+    
+            # Perturb parameters and store the perturbations
             e_ws = []
             with torch.no_grad():
                 for p in self.parameters():
-                    if p.grad is not None:
-                        e_w = (p.grad / (grad_norm + 1e-12)) * self.sam_rho
-                        p.add_(e_w)
-                        e_ws.append((p, e_w))
-                    else:
-                        e_ws.append((p, None))
-            
+                    if p.grad is None:
+                        e_ws.append(None)
+                        continue
+                    e_w = p.grad / (grad_norm + 1e-12) * self.sam_rho
+                    p.add_(e_w)
+                    e_ws.append(e_w)
+    
             # Second forward-backward pass
             optimizer.zero_grad()
             preds_adv = self.forward(batch)
             loss_adv = self.loss_function(preds_adv, batch)
             self.manual_backward(loss_adv)
-            # Restore original parameters
-            # Restore original parameters using the stored e_ws
+    
+            # Restore original parameters using stored e_ws
             with torch.no_grad():
-                for p, e_w in e_ws:
-                    p.sub_(e_w)
+                for p, e_w in zip(self.parameters(), e_ws):
+                    if e_w is not None:
+                        p.sub_(e_w)
+    
             # Update parameters
             optimizer.step()
             self.log('train_loss', loss_adv)
-            # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
-
     
         elif self.use_asam:
             # ASAM optimization
@@ -208,61 +201,50 @@ class LitPaiNNModel(L.LightningModule):
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
-            if self.use_laplace:
-                with torch.no_grad():
-                    for i, p in enumerate(self.parameters()):
-                        if p.grad is not None:
-                            self.accumulated_squared_gradients[i] += p.grad.data.clone() ** 2
-                self.total_batches += 1
-            # Compute parameter norms and scaled gradients
+    
             with torch.no_grad():
                 param_norms = []
-                scaled_grads = []
                 for p in self.parameters():
                     if p.grad is None:
                         param_norms.append(None)
                         continue
                     param_norm = torch.norm(p)
                     param_norms.append(param_norm)
+    
+                scaled_grads = []
+                for p, param_norm in zip(self.parameters(), param_norms):
+                    if p.grad is None:
+                        continue
                     scaled_grad = p.grad / (param_norm + 1e-12)
                     scaled_grads.append(scaled_grad.view(-1))
-                
-                # Compute the overall scaled gradient norm
-                if scaled_grads:
-                    scaled_grad_norm = torch.norm(torch.cat(scaled_grads))
-                else:
-                    scaled_grad_norm = torch.tensor(0.0, device=self.device)
-              
-                # Compute epsilon
+    
+                scaled_grad_norm = torch.norm(torch.cat(scaled_grads))
                 epsilon = self.sam_rho / (scaled_grad_norm + 1e-12)
-                
-                # Perturb parameters
+    
+                # Perturb parameters and store perturbations
                 perturbations = []
                 for p, param_norm in zip(self.parameters(), param_norms):
-                    if p.grad is not None:
-                        perturbation = epsilon * p.grad / (param_norm + 1e-12)
-                        p.add_(perturbation)
-                        perturbations.append(perturbation)
-                    else:
-                        # No gradient for this parameter
+                    if p.grad is None:
                         perturbations.append(None)
-            
+                        continue
+                    perturbation = epsilon * p.grad / (param_norm + 1e-12)
+                    p.add_(perturbation)
+                    perturbations.append(perturbation)
+    
             # Second forward-backward pass
             optimizer.zero_grad()
             preds_adv = self.forward(batch)
             loss_adv = self.loss_function(preds_adv, batch)
             self.manual_backward(loss_adv)
-            # Restore original parameters using the stored perturbations
+    
+            # Restore original parameters using stored perturbations
             with torch.no_grad():
                 for p, perturbation in zip(self.parameters(), perturbations):
                     if perturbation is not None:
                         p.sub_(perturbation)
-
-
-            # Update parameters
+    
             optimizer.step()
             self.log('train_loss', loss_adv)
-            # Step the learning rate scheduler
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
             
