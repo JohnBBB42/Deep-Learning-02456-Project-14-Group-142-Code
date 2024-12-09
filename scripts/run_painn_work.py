@@ -407,27 +407,24 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
         self.swa_start = swa_start
         self.max_num_models = max_num_models
         self.no_cov_mat = no_cov_mat
+        self.swag_constant_lr = swag_constant_lr
         self.num_parameters = sum(p.numel() for p in self.parameters())
         self.register_buffer('mean', torch.zeros(self.num_parameters))
         self.register_buffer('sq_mean', torch.zeros(self.num_parameters))
         if not self.no_cov_mat:
             self.register_buffer('cov_mat_sqrt', torch.zeros((self.max_num_models, self.num_parameters)))
         self.num_models_collected = 0
-        self.constant_lr = False  # Flag to indicate if we have switched to constant LR
 
     def training_step(self, batch, batch_idx):
         loss = super().training_step(batch, batch_idx)
         current_epoch = self.current_epoch
         max_epochs = self.trainer.max_epochs
 
-        # Once we reach SWA start epoch, switch to constant LR if not already done.
-        if current_epoch >= self.swa_start * max_epochs and not self.constant_lr:
-            # Get the current optimizer
+        # If swag_constant_lr is provided and we are past swa_start, set the LR
+        if self.swag_constant_lr is not None and current_epoch >= self.swa_start * max_epochs:
             optimizer = self.optimizers()
-            # Set a constant LR
             for g in optimizer.param_groups:
-                g['lr'] = self.init_lr  # or another chosen constant LR
-            self.constant_lr = True
+                g['lr'] = self.swag_constant_lr
 
         if current_epoch >= self.swa_start * max_epochs:
             self.collect_model()
