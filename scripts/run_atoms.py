@@ -418,6 +418,7 @@ def configure_trainer(
     use_swag: bool = False,
     swag_swa_start: float = 0.8,
     swag_max_num_models: int = 20,
+    swag_constant_lr: float | None = None,
     no_cov_mat: bool = True,
 ) -> L.Trainer:
     """Trainer.
@@ -570,6 +571,7 @@ def run(cli, lit_model_cls, lit_data_cls=LitData):
                 "swa_start": cfg.swag_swa_start,
                 "max_num_models": cfg.swag_max_num_models,
                 "no_cov_mat": cfg.no_cov_mat,
+                "swag_constant_lr": cfg.swag_constant_lr,  # Pass the new LR argument
             })
 
         model = lit_model_cls(**model_kwargs)
@@ -620,8 +622,8 @@ def configure_cli(default_job_name, add_trainer_args=True, add_data_args=True):
     cli.add_argument("--use_swag", type=bool, default=False, help="Enable SWAG.")
     cli.add_argument("--swag_swa_start", type=float, default=0.8, help="When to start SWAG.")
     cli.add_argument("--swag_max_num_models", type=int, default=20, help="Max number of models to collect.")
+    cli.add_argument("--swag_constant_lr", type=float, default=None, help="Constant LR value to set after SWA start (if enabled).")
     cli.add_argument("--no_cov_mat", type=bool, default=True, help="Do not store covariance matrix in SWAG.")
-    cli.add_argument("--num_swag_samples", type=int, default=30, help="Number of samples for SWAG prediction.")
     # SAM Arguments
     cli.add_argument("--use_sam", type=bool, default=False, help="Enable SAM.")  # Add this line
     cli.add_argument("--sam_rho", type=float, default=0.05, help="SAM perturbation parameter.")  # Add this line
@@ -639,6 +641,7 @@ def configure_cli(default_job_name, add_trainer_args=True, add_data_args=True):
         cli.link_arguments("use_swag", "trainer.use_swag", apply_on="parse")
         cli.link_arguments("swag_swa_start", "trainer.swag_swa_start", apply_on="parse")
         cli.link_arguments("swag_max_num_models", "trainer.swag_max_num_models", apply_on="parse")
+        cli.link_arguments("swag_constant_lr", "trainer.swag_constant_lr", apply_on="parse")
         cli.link_arguments("no_cov_mat", "trainer.no_cov_mat", apply_on="parse")
         # Original
         cli.link_arguments("output_root_dir", "trainer.output_root_dir", apply_on="parse")
