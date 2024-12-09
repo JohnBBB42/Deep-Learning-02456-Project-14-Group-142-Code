@@ -39,6 +39,7 @@ class LitPaiNNModel(L.LightningModule):
         # Laplace approximation parameters
         use_laplace: bool = False,
         num_laplace_samples: int = 10,
+        prior_precision: float = 0.0,
         # Underscores hide these arguments from the CLI
         _output_scale: float = 1.0,
         _output_offset: float = 0.0,
@@ -79,6 +80,7 @@ class LitPaiNNModel(L.LightningModule):
         self.heteroscedastic = heteroscedastic
         self.use_laplace = use_laplace
         self.num_laplace_samples = num_laplace_samples
+        self.prior_precision = prior_precision,
         if self.use_sam and self.use_asam:
             raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
         if self.use_sam or self.use_asam:
@@ -392,12 +394,13 @@ class LitPaiNNModel(L.LightningModule):
             # Compute the approximate Hessian diagonal
             self.hessian_diagonal = []
             for sq_grad in self.accumulated_squared_gradients:
-                h_diag = sq_grad / self.total_batches
+                h_diag = (sq_grad / self.total_batches) + self.prior_precision
                 self.hessian_diagonal.append(h_diag)
             # Store the parameter means (trained weights)
             self.param_means = [p.detach().clone() for p in self.parameters()]
             # Reset accumulated gradients to free memory
             self.accumulated_squared_gradients = None
+            
 
 class LitSWAGPaiNNModel(LitPaiNNModel):
     """SWAG model extending LitPaiNNModel."""
@@ -517,6 +520,8 @@ def main():
     # Laplace
     cli.link_arguments("use_laplace", "model.use_laplace", apply_on="parse")
     cli.link_arguments("num_laplace_samples", "model.num_laplace_samples", apply_on="parse")
+    cli.link_arguments("prior_precision", "model.prior_precision", apply_on="parse")
+
 
     # Run the script
     cfg = cli.parse_args()
