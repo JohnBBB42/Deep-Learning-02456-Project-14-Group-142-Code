@@ -632,8 +632,8 @@ def configure_cli(default_job_name, add_trainer_args=True, add_data_args=True):
     # HR arguments
     cli.add_argument("--heteroscedastic", type=bool, default=False, help="Enable heteroscedastic regression.")
     cli.add_argument("--use_laplace", type=bool, default=False, help="Apply Laplace approximation for Bayesian posterior.")
-    cli.add_argument('--num_laplace_samples', type=int, default=10,
-                     help='Number of weight samples during Laplace prediction.')
+    cli.add_argument('--num_laplace_samples', type=int, default=10, help='Number of weight samples during Laplace prediction.')
+    cli.add_argument("--prior_precision", type=float, default=0.0, help="Prior precision to add during Laplace approximation.")
     if add_trainer_args:
         # cli = pl.Trainer.add_argparse_args(cli)  # Add all trainer arguments to cli
         cli.add_lightning_class_args(configure_trainer, "trainer")
