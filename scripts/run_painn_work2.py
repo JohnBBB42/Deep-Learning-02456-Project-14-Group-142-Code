@@ -82,8 +82,8 @@ class LitPaiNNModel(L.LightningModule):
         self.sam_rho = sam_rho
         self.heteroscedastic = heteroscedastic
         self.use_laplace = use_laplace
-        self.num_laplace_samples = num_laplace_samples
-        self.prior_precision = prior_precision,
+        self.num_laplace_samples = num_laplace_samples,
+        self.prior_precision = prior_precision
         if self.use_sam and self.use_asam:
             raise ValueError("Cannot use both SAM and ASAM at the same time. Please select one.")
         if self.use_sam or self.use_asam:
