@@ -155,28 +155,33 @@ class LitPaiNNModel(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
+        
         if self.use_sam or self.use_asam:
-            # SAM/ASAM logic from notebook:
+            # SAM/ASAM logic:
             def closure():
-                optimizer.zero_grad()
+                # Forward pass
                 preds = self.forward(batch)
                 loss = self.loss_function(preds, batch)
+                # Backward pass
                 self.manual_backward(loss)
                 return loss
+    
             # First forward-backward pass
             loss = closure()
-            # Step optimizer (this will do SAM step)
-            optimizer.step(closure)
+            # Perform SAM's first step
+            optimizer.first_step(zero_grad=True)
     
-            # Recompute loss after SAM step if needed
-            preds = self.forward(batch)
-            loss_after = self.loss_function(preds, batch)
-            self.log("train_loss", loss_after)
+            # Second forward-backward pass
+            loss_2 = closure()
+            # Perform SAM's second step
+            optimizer.second_step(zero_grad=True)
+    
+            # Log and scheduler step
+            self.log("train_loss", loss_2)
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
-    
-            return loss_after
             
+            return loss_2
         else:
             # Regular training step
             # Compute loss
