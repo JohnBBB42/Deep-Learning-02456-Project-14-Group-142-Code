@@ -340,8 +340,14 @@ class LitPaiNNModel(L.LightningModule):
                 self.hessian_diagonal.append(h_diag)
             # Store the parameter means (trained weights)
             self.param_means = [p.detach().clone() for p in self.parameters()]
-            # Reset accumulated gradients to free memory
-            self.accumulated_squared_gradients = None
+            # Save Laplace results as CSV
+            param_means_arr = torch.cat([p.view(-1) for p in self.param_means]).cpu().numpy()
+            hessian_diagonal_arr = torch.cat([h.view(-1) for h in self.hessian_diagonal]).cpu().numpy()
+            pd.DataFrame(param_means_arr).to_csv(Path(self.trainer.log_dir) / "laplace_param_means.csv", index=False)
+            pd.DataFrame(hessian_diagonal_arr).to_csv(Path(self.trainer.log_dir) / "laplace_hessian_diagonal.csv", index=False)
+            
+        super().on_train_end()  # Ensure parent method behavior is preserved
+            
 
 class LitSWAGPaiNNModel(LitPaiNNModel):
     """SWAG model extending LitPaiNNModel."""
@@ -396,10 +402,27 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
             sample = mean + scale * z * std
         torch.nn.utils.vector_to_parameters(sample, self.parameters())
 
-    def predict_step(self, batch, batch_idx, dataloader_idx=None):
-        self.sample(scale=1.0, cov=not self.no_cov_mat)
-        preds = super().predict_step(batch, batch_idx, dataloader_idx)
-        return preds
+    def predict_step(self, batch, batch_idx, dataloader_idx=None, num_swag_samples=30):
+        # Draw multiple samples from SWAG distribution
+        predictions = []
+        for _ in range(num_swag_samples):
+            # Sample a set of parameters from SWAG distribution
+            self.sample(scale=1.0, cov=not self.no_cov_mat)
+            preds = super().predict_step(batch, batch_idx, dataloader_idx)
+            predictions.append(preds)
+    
+        # Aggregate predictions
+        # Assuming 'predictions' is a list of dictionaries where each dictionary has identical keys
+        # For each key, stack predictions and compute mean & variance
+        aggregated = {}
+        keys = predictions[0].keys()
+        for k in keys:
+            stacked = torch.stack([p[k] for p in predictions])  # [num_swag_samples, ...]
+            aggregated[f"{k}_mean"] = stacked.mean(dim=0)
+            aggregated[f"{k}_var"] = stacked.var(dim=0, unbiased=False)
+    
+        return aggregated
+
 
     def on_save_checkpoint(self, checkpoint):
         checkpoint['mean'] = self.mean
@@ -416,7 +439,7 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
             self.cov_mat_sqrt = checkpoint['cov_mat_sqrt']
 
     def on_train_end(self):
-        # Save SWAG buffers
+        # Save SWAG buffers as a checkpoint
         swag_state = {
             'mean': self.mean,
             'sq_mean': self.sq_mean,
@@ -426,6 +449,26 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
             swag_state['cov_mat_sqrt'] = self.cov_mat_sqrt
         swag_ckpt_path = Path(self.trainer.log_dir) / "swag.ckpt"
         torch.save(swag_state, swag_ckpt_path)
+    
+        # Save SWAG mean and variance explicitly
+        mean_arr = self.mean.cpu().numpy()
+        sq_mean_arr = self.sq_mean.cpu().numpy()
+        variance_arr = sq_mean_arr - mean_arr**2  # Compute variance
+    
+        # Save the results as CSV
+        pd.DataFrame(mean_arr).to_csv(Path(self.trainer.log_dir) / "swag_mean.csv", index=False)
+        pd.DataFrame(variance_arr).to_csv(Path(self.trainer.log_dir) / "swag_variance.csv", index=False)
+    
+        # Save the square mean (optional, but keeping it for traceability)
+        pd.DataFrame(sq_mean_arr).to_csv(Path(self.trainer.log_dir) / "swag_sq_mean.csv", index=False)
+    
+        # Save covariance matrix (if enabled)
+        if not self.no_cov_mat:
+            pd.DataFrame(self.cov_mat_sqrt.cpu().numpy()).to_csv(Path(self.trainer.log_dir) / "swag_cov_mat_sqrt.csv", index=False)
+    
+        # Call the parent method to preserve existing behavior
+        super().on_train_end()
+
 
 
 def main():
