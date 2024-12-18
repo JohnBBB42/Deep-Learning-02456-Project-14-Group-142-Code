@@ -357,6 +357,7 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
         self.swa_start = swa_start
         self.max_num_models = max_num_models
         self.no_cov_mat = no_cov_mat
+        self.num_swag_samples = num_swag_samples
         self.num_parameters = sum(p.numel() for p in self.parameters())
         self.register_buffer('mean', torch.zeros(self.num_parameters))
         self.register_buffer('sq_mean', torch.zeros(self.num_parameters))
@@ -402,18 +403,16 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
             sample = mean + scale * z * std
         torch.nn.utils.vector_to_parameters(sample, self.parameters())
 
-    def predict_step(self, batch, batch_idx, dataloader_idx=None, num_swag_samples=30):
+    def predict_step(self, batch, batch_idx, dataloader_idx=None):
         # Draw multiple samples from SWAG distribution
         predictions = []
-        for _ in range(num_swag_samples):
+        for _ in range(self.num_swag_samples):
             # Sample a set of parameters from SWAG distribution
             self.sample(scale=1.0, cov=not self.no_cov_mat)
             preds = super().predict_step(batch, batch_idx, dataloader_idx)
             predictions.append(preds)
     
         # Aggregate predictions
-        # Assuming 'predictions' is a list of dictionaries where each dictionary has identical keys
-        # For each key, stack predictions and compute mean & variance
         aggregated = {}
         keys = predictions[0].keys()
         for k in keys:
@@ -422,6 +421,7 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
             aggregated[f"{k}_var"] = stacked.var(dim=0, unbiased=False)
     
         return aggregated
+
 
 
     def on_save_checkpoint(self, checkpoint):
