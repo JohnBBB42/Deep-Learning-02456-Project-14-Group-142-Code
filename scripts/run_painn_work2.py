@@ -9,9 +9,9 @@ import atomgnn.models.loss
 import atomgnn.models.utils
 
 import sys
+import csv
 sys.path.append(r'/home/energy/s244501/sam')
 from sam import SAM
-import pandas as pd
 from pathlib import Path
 from run_atoms import configure_cli, run
 
@@ -343,8 +343,21 @@ class LitPaiNNModel(L.LightningModule):
             # Save Laplace results as CSV
             param_means_arr = torch.cat([p.view(-1) for p in self.param_means]).cpu().numpy()
             hessian_diagonal_arr = torch.cat([h.view(-1) for h in self.hessian_diagonal]).cpu().numpy()
-            pd.DataFrame(param_means_arr).to_csv(Path(self.trainer.log_dir) / "laplace_param_means.csv", index=False)
-            pd.DataFrame(hessian_diagonal_arr).to_csv(Path(self.trainer.log_dir) / "laplace_hessian_diagonal.csv", index=False)
+            # After computing param_means_arr and hessian_diagonal_arr:
+            param_means_file = Path(self.trainer.log_dir) / "laplace_param_means.csv"
+            hessian_file = Path(self.trainer.log_dir) / "laplace_hessian_diagonal.csv"
+            
+            # Save param_means_arr
+            with open(param_means_file, "w", newline="") as f:
+                writer = csv.writer(f)
+                for val in param_means_arr:
+                    writer.writerow([val])
+            
+            # Save hessian_diagonal_arr
+            with open(hessian_file, "w", newline="") as f:
+                writer = csv.writer(f)
+                for val in hessian_diagonal_arr:
+                    writer.writerow([val])
             
         super().on_train_end()  # Ensure parent method behavior is preserved
             
@@ -455,16 +468,35 @@ class LitSWAGPaiNNModel(LitPaiNNModel):
         sq_mean_arr = self.sq_mean.cpu().numpy()
         variance_arr = sq_mean_arr - mean_arr**2  # Compute variance
     
-        # Save the results as CSV
-        pd.DataFrame(mean_arr).to_csv(Path(self.trainer.log_dir) / "swag_mean.csv", index=False)
-        pd.DataFrame(variance_arr).to_csv(Path(self.trainer.log_dir) / "swag_variance.csv", index=False)
-    
-        # Save the square mean (optional, but keeping it for traceability)
-        pd.DataFrame(sq_mean_arr).to_csv(Path(self.trainer.log_dir) / "swag_sq_mean.csv", index=False)
-    
-        # Save covariance matrix (if enabled)
+        swag_mean_file = Path(self.trainer.log_dir) / "swag_mean.csv"
+        swag_var_file = Path(self.trainer.log_dir) / "swag_variance.csv"
+        swag_sq_mean_file = Path(self.trainer.log_dir) / "swag_sq_mean.csv"
+        
+        # Save mean_arr
+        with open(swag_mean_file, "w", newline="") as f:
+            writer = csv.writer(f)
+            for val in mean_arr:
+                writer.writerow([val])
+        
+        # Save variance_arr
+        with open(swag_var_file, "w", newline="") as f:
+            writer = csv.writer(f)
+            for val in variance_arr:
+                writer.writerow([val])
+        
+        # Save sq_mean_arr
+        with open(swag_sq_mean_file, "w", newline="") as f:
+            writer = csv.writer(f)
+            for val in sq_mean_arr:
+                writer.writerow([val])
+        
+        # If covariance matrix is enabled, save cov_mat_sqrt as well
         if not self.no_cov_mat:
-            pd.DataFrame(self.cov_mat_sqrt.cpu().numpy()).to_csv(Path(self.trainer.log_dir) / "swag_cov_mat_sqrt.csv", index=False)
+            swag_cov_file = Path(self.trainer.log_dir) / "swag_cov_mat_sqrt.csv"
+            with open(swag_cov_file, "w", newline="") as f:
+                writer = csv.writer(f)
+                for row in self.cov_mat_sqrt.cpu().numpy():
+                    writer.writerow(row)
     
         # Call the parent method to preserve existing behavior
         super().on_train_end()
