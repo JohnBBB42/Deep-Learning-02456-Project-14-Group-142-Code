@@ -11,6 +11,7 @@ import atomgnn.models.utils
 import sys
 sys.path.append(r'/home/energy/s244501/sam')
 from sam import SAM
+import pandas as pd
 from pathlib import Path
 from run_atoms import configure_cli, run
 
