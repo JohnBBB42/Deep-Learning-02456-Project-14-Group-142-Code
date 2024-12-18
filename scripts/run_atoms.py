@@ -325,7 +325,7 @@ def predict(cfg, lit_data_cls, lit_model_cls, trainer):
                 swa_start=cfg.trainer.swag_swa_start,
                 max_num_models=cfg.trainer.swag_max_num_models,
                 no_cov_mat=cfg.trainer.no_cov_mat,
-                num_swag_samples: cfg.num_swag_samples,
+                num_swag_samples=cfg.trainer.num_swag_samples,
             )
         else:
             model = lit_model_cls.load_from_checkpoint(ckpt_path)
@@ -338,7 +338,7 @@ def predict(cfg, lit_data_cls, lit_model_cls, trainer):
                 swa_start=cfg.trainer.swag_swa_start,
                 max_num_models=cfg.trainer.swag_max_num_models,
                 no_cov_mat=cfg.trainer.no_cov_mat,
-                num_swag_samples: cfg.num_swag_samples,
+                num_swag_samples=cfg.trainer.num_swag_samples,
             )
         else:
             model = lit_model_cls.load_from_checkpoint(ckpt_path)
