@@ -468,6 +468,13 @@ def configure_trainer(
     if learning_rate_monitor:
         callbacks.append(L.pytorch.callbacks.LearningRateMonitor())
     # Add SWA callback if enabled
+    if use_swag:
+        # Ensure SWA is enabled when using SWAG
+        use_swa = True
+        # Align SWAG's swa_start with SWA's swa_epoch_start if not explicitly set
+        if swag_swa_start is None:
+            swag_swa_start = swa_epoch_start
+
     if use_swa:
         from lightning.pytorch.callbacks import StochasticWeightAveraging
         swa_callback = StochasticWeightAveraging(
@@ -477,9 +484,6 @@ def configure_trainer(
             annealing_strategy=annealing_strategy,
         )
         callbacks.append(swa_callback)
-    if use_swag:
-        # SWAG is handled in the model, so no need for a callback here
-        pass
     # Trainer settings
     limit_train_batches = 2 if smoketest else 1.0
     limit_val_batches = 2 if smoketest else 1.0
