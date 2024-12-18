@@ -365,7 +365,7 @@ class LitPaiNNModel(L.LightningModule):
 class LitSWAGPaiNNModel(LitPaiNNModel):
     """SWAG model extending LitPaiNNModel."""
 
-    def __init__(self, swa_start=0.8, max_num_models=20, no_cov_mat=True, **kwargs):
+    def __init__(self, swa_start=0.8, max_num_models=20, no_cov_mat=True, num_swag_samples=30, **kwargs):
         super().__init__(**kwargs)
         self.swa_start = swa_start
         self.max_num_models = max_num_models
