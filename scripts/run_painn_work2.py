@@ -155,32 +155,37 @@ class LitPaiNNModel(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
+
+        def enable_running_stats(model):
+            for m in model.modules():
+                if hasattr(m, 'track_running_stats'):
+                    m.track_running_stats = True
+        
+        def disable_running_stats(model):
+            for m in model.modules():
+                if hasattr(m, 'track_running_stats'):
+                    m.track_running_stats = False
+
         
         if self.use_sam or self.use_asam:
-            # SAM/ASAM logic:
-            def closure():
-                # Forward pass
-                preds = self.forward(batch)
-                loss = self.loss_function(preds, batch)
-                # Backward pass
-                self.manual_backward(loss)
-                return loss
-    
-            # First forward-backward pass
-            loss = closure()
-            # Perform SAM's first step
+            # First forward-backward pass with running stats enabled
+            enable_running_stats(self.model)
+            preds = self.forward(batch)
+            loss = self.loss_function(preds, batch)
+            self.manual_backward(loss)
             optimizer.first_step(zero_grad=True)
     
-            # Second forward-backward pass
-            loss_2 = closure()
-            # Perform SAM's second step
+            # Second forward-backward pass with running stats disabled
+            disable_running_stats(self.model)
+            preds_2 = self.forward(batch)
+            loss_2 = self.loss_function(preds_2, batch)
+            self.manual_backward(loss_2)
             optimizer.second_step(zero_grad=True)
     
-            # Log and scheduler step
             self.log("train_loss", loss_2)
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
-            
+    
             return loss_2
         else:
             # Regular training step
