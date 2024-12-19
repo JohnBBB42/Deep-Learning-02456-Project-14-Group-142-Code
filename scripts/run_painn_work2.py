@@ -329,12 +329,12 @@ class LitPaiNNModel(L.LightningModule):
               self.parameters(),
               base_optimizer,
               rho=self.sam_rho,
-              lr=5e-4,
+              lr=self.init_lr,
               momentum=0.9,
-              weight_decay=1e-4,
+              weight_decay=0,
               adaptive=adaptive
           )
-          lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999)
+          lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
           return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
       else:
           optimizer = torch.optim.Adam(self.parameters(), lr=self.init_lr)
