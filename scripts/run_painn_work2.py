@@ -157,15 +157,11 @@ class LitPaiNNModel(L.LightningModule):
         optimizer = self.optimizers()
         
         if self.use_sam or self.use_asam:
-            # First forward-backward pass with running stats enabled
-            enable_running_stats(self.model)
             preds = self.forward(batch)
             loss = self.loss_function(preds, batch)
             self.manual_backward(loss)
             optimizer.first_step(zero_grad=True)
     
-            # Second forward-backward pass with running stats disabled
-            disable_running_stats(self.model)
             preds_2 = self.forward(batch)
             loss_2 = self.loss_function(preds_2, batch)
             self.manual_backward(loss_2)
