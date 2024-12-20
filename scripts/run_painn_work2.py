@@ -390,17 +390,7 @@ class LitPaiNNModel(L.LightningModule):
 
     def configure_optimizers(self):
       if self.use_sam or self.use_asam:
-          base_optimizer = torch.optim.SGD
-          adaptive = True if self.use_asam else False
-          optimizer = SAM(
-              self.parameters(),
-              base_optimizer,
-              rho=self.sam_rho,
-              lr=self.init_lr,
-              momentum=0.9,
-              weight_decay=0,
-              adaptive=adaptive
-          )
+          optimizer = torch.optim.SGD(self.parameters(), lr=self.init_lr, momentum=0.9)
           lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999996)
           return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
       else:
