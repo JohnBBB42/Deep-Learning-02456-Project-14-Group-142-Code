@@ -172,10 +172,6 @@ class LitPaiNNModel(L.LightningModule):
             optimizer.second_step(zero_grad=True)
     
             self.log("train_loss", loss_2)
-
-            # Increment global step manually
-            self.trainer.fit_loop.epoch_loop._batches_that_stepped += 1
-            self.trainer.fit_loop.epoch_loop.batch_loop.global_step += 1
             
             lr_scheduler = self.lr_schedulers()
             lr_scheduler.step()
