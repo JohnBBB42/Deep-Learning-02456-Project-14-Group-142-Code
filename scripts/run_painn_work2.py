@@ -155,17 +155,6 @@ class LitPaiNNModel(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
-
-        def enable_running_stats(model):
-            for m in model.modules():
-                if hasattr(m, 'track_running_stats'):
-                    m.track_running_stats = True
-        
-        def disable_running_stats(model):
-            for m in model.modules():
-                if hasattr(m, 'track_running_stats'):
-                    m.track_running_stats = False
-
         
         if self.use_sam or self.use_asam:
             # First forward-backward pass with running stats enabled
