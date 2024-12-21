@@ -1,15 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.functional import mse_loss, gaussian_nll_loss
-from torch.optim.swa_utils import AveragedModel, SWALR, update_bn
-import copy
-import math
-from ase.db import connect
-from ase import Atoms
-from torch.utils.data import DataLoader
-import json
-import itertools
+from data.data import Batch
+from models.utils import (BesselExpansion, compute_edge_vectors_and_norms,
+                                  cosine_cutoff, reduce_splits, sum_index)
 
 ###############################################################
 # Core PaiNN model code                                       #
