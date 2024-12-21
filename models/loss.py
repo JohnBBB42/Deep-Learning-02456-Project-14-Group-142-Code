@@ -2,6 +2,11 @@
 # Loss function and Training utilities #
 ###############################################################
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.functional import mse_loss, gaussian_nll_loss
+
 class MSELoss(torch.nn.Module):
     def __init__(self, target_property: str = "", forces: bool = False):
         super().__init__()
