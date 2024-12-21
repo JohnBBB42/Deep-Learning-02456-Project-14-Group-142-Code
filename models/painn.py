@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from data.data import Batch
-from models.utils import (BesselExpansion, compute_edge_vectors_and_norms,
+from data.utils import (BesselExpansion, compute_edge_vectors_and_norms,
                                   cosine_cutoff, reduce_splits, sum_index)
 
 ###############################################################
