@@ -587,6 +587,7 @@ def main():
     # Laplace
     cli.link_arguments("use_laplace", "model.use_laplace", apply_on="parse")
     cli.link_arguments("num_laplace_samples", "model.num_laplace_samples", apply_on="parse")
+    cli.link_arguments("prior_precision", "model.prior_precision", apply_on="parse")
 
     # Run the script
     cfg = cli.parse_args()
