@@ -19,5 +19,5 @@ Furthermore, there is a range of extensions has been applied as extensions to th
 
 •	[10] Laplacian Approximation: https://openreview.net/pdf?id=A6EquH0enk
 
-The dataset used was the QM9 database which can be downloaded as an ASE database from `/datasets/`
-The splits used was 110k for training 10k for validation and the rest for testing and can be downloaded from `/datasets/` 
+The dataset used was the QM9 database which can be downloaded as an ASE database from `/data/`
+The splits used was 110k for training 10k for validation and the rest for testing and can be downloaded from `/data/` 
