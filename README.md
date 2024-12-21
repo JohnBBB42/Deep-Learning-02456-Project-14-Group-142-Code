@@ -18,6 +18,7 @@ The modifications:
 
 •	[10] Laplacian Approximation: https://openreview.net/pdf?id=A6EquH0enk
 
-The dataset used was the QM9 database, which I have included as a zipped file under `/data/`, else it can be downloaded as an ASE database from Kaggle.
-The splits used was 110k for training 10k for validation and the rest for testing and can be downloaded from `/data/`, the same splits are also found in the zip file. 
+The dataset used was the QM9 database, which can be downloaded as an ASE database from Kaggle.
+The splits used was 110k for training 10k for validation and the rest for testing and can be downloaded from `/data/`. 
 The code should be relatively straigt forward to use, the number of steps and validation interval can be controlled directly in the training loop and so can the hyperparameters.
+Note: the SWAG number of samples are controlled directly in the get_swag_predictions.
