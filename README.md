@@ -1,11 +1,10 @@
 # Graph Representation learning on Molecular Datasets
 The initial aim of this project was to train the Polarizable Atom Interaction Neural Network (PaiNN) model(https://arxiv.org/pdf/2102.03150) on the Quantum Machines 9 (QM9) data set, which is a database of around 134 thousands stable organic molecules with nine heavy atoms(https://arxiv.org/pdf/1703.00564).
 
-The PaiNN model used in this project can be found under models as `/models/painn.py`
+A notebook example of the PaiNN model used in this project and the training script to running the simple PaiNN model can be found as `/scripts/run_painn.ipynb`
 
-The script to running the simple PaiNN model can be found as `/scripts/run_painn.ipynb`
-
-Furthermore, there is a range of extensions has been applied as extensions to the original PaiNN model which are implemented in the trainer class in `/scripts/Trainer.py` including:
+Furthermore, there is a range of modfications has been applied as extensions to the original PaiNN model which are implemented in the trainer class and can be turned on and off.
+The modifications:
 
 •	[5] SWA: https://arxiv.org/pdf/1803.05407.pdf
 
@@ -19,5 +18,6 @@ Furthermore, there is a range of extensions has been applied as extensions to th
 
 •	[10] Laplacian Approximation: https://openreview.net/pdf?id=A6EquH0enk
 
-The dataset used was the QM9 database which can be downloaded as an ASE database from `/data/`
-The splits used was 110k for training 10k for validation and the rest for testing and can be downloaded from `/data/` 
+The dataset used was the QM9 database, which I have included as a zipped file under `/data/`, else it can be downloaded as an ASE database from Kaggle.
+The splits used was 110k for training 10k for validation and the rest for testing and can be downloaded from `/data/`, the same splits are also found in the zip file. 
+The code should be relatively straigt forward to use, the number of steps and validation interval can be controlled directly in the training loop and so can the hyperparameters.
