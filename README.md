@@ -15,7 +15,7 @@ Furthermore, there is a range of extensions has been applied as extensions to th
 
 •	[8] ASAM: https://arxiv.org/pdf/2102.11600
 
-•	[9] Gaussian Negetive Log Likelihood: https://arxiv.org/abs/2006.04910, https://arxiv.org/pdf/2212.09184
+•	[9] Gaussian Negetive Log Likelihood: https://arxiv.org/abs/2006.04910
 
 •	[10] Laplacian Approximation: https://openreview.net/pdf?id=A6EquH0enk
 
