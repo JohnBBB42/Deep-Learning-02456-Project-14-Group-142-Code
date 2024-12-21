@@ -5,7 +5,7 @@ The PaiNN model used in this project can be found under models as `/models/painn
 
 The script to running the simple PaiNN model can be found as `/scripts/run_painn.ipynb`
 
-Furthermore, there is a range of extensions has been applied as extensions to the original PaiNN model which are implemented in the trainer class in `/scripts/run_painn.ipynb` including:
+Furthermore, there is a range of extensions has been applied as extensions to the original PaiNN model which are implemented in the trainer class in `/scripts/Trainer.py` including:
 
 •	[5] SWA: https://arxiv.org/pdf/1803.05407.pdf
 
