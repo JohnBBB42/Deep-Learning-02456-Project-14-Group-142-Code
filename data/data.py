@@ -1,11 +1,4 @@
-###############################################################
-# Implementations of Batch, reduce_splits, #
-# cosine_cutoff, BesselExpansion, compute_edge_vectors_and_norms, and sum_index
-###############################################################
-
-"""Data object classes and related utilities."""
-
-from collections.abc import Sequence
+import torch
 
 ###############################################################
 # BaseData, Data, AtomsData, GeometricData classes
