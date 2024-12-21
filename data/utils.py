@@ -2,6 +2,9 @@
 # Batch, collate_data and Utility functions
 ###############################################################
 
+import math
+import torch
+
 class Batch(Data):
     """An object representing a batch of data.
 
